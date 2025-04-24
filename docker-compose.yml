@@ -1,0 +1,69 @@
+version: '3.8'
+
+x-env-keys: &env_key_vars
+  ACCESS_KEY: my-access-key
+  SECRET_KEY: my-secret-key
+
+x-client-url: &env_client_url
+  CLIENT_URL: http://swgoh-comlink:3000
+
+services:
+  swgoh-comlink:
+    container_name: swgoh-comlink
+    image: ghcr.io/swgoh-utils/swgoh-comlink:latest
+    restart: always
+    environment:
+      # yaml anchors allow defining pieces of config once and repeating as needed
+      <<: *env_key_vars
+      APP_NAME: swgoh-comlink-dev
+      PORT: 3000
+    ports:
+      - 5000:3000
+    networks:
+      - comlink
+
+  swgoh-stats:
+    container_name: swgoh-stats
+    image: ghcr.io/swgoh-utils/swgoh-stats:latest
+    restart: always
+    depends_on:
+      - swgoh-comlink
+    environment:
+      # combine multiple sets of values as defaults using yaml anchors
+      <<: [*env_key_vars, *env_client_url]
+      PORT: 3223
+    volumes:
+      - "./statCalcData:/app/statCalcData"
+    ports:
+      - 3223:3223
+    networks:
+      - comlink
+
+  # please just migrate to using comlink and don't use fake.help
+  # but here's an example in case you need it
+  # fake.help:
+  #   container_name: fake.help
+  #   image: ghcr.io/swgoh-utils/fake.help:latest
+  #   restart: always
+  #   depends_on:
+  #     - swgoh-comlink
+  #   environment:
+  #     # combine multiple sets of values as defaults using yaml anchors
+  #     <<: [*env_key_vars, *env_client_url]
+  #     PORT: 3333
+  #   volumes:
+  #     - "./data:/app/data"
+  #   ports:
+  #     - 3333:3333
+  #   networks:
+  #     - comlink
+
+  swgoh-ae:
+    container_name: swgoh-ae
+    image: ghcr.io/swgoh-utils/swgoh-ae2:latest
+    restart: always
+    ports:
+      - 3123:80
+
+networks:
+  comlink: {}
