@@ -40,7 +40,15 @@ test("serves only authenticated, calculated live roster data", async (t) => {
       currentTier: 13,
       relic: { currentTier: 9 },
       gp: 35000,
-      skill: [{ id: "skill_vader_basic", tier: 2 }],
+      skill: [{ id: "skill_vader_basic", tier: 3 }],
+      equippedStatMod: [{ definitionId: "statmod_6dot" }],
+    }, {
+      id: "owned-ship-1",
+      definitionId: "TESTSHIP:SEVEN_STAR",
+      currentRarity: 7,
+      currentLevel: 85,
+      currentTier: 1,
+      gp: 50000,
     }],
   };
 
@@ -68,12 +76,23 @@ test("serves only authenticated, calculated live roster data", async (t) => {
           nameKey: "UNIT_DARTHVADER_NAME",
           categoryIdList: ["alignment_dark", "role_attacker", "affiliation_empire", "affiliation_sith"],
           skillReferenceList: [{ skillId: "skill_vader_basic" }],
+        }, {
+          baseId: "TESTSHIP",
+          rarity: 1,
+          combatType: "SHIP",
+          name: "Test Ship",
+          thumbnailName: "tex.charui_testship",
+          categoryIdList: ["alignment_light"],
+        }],
+        statMod: [{
+          id: "statmod_6dot",
+          rarity: 6,
         }],
         skill: [{
           id: "skill_vader_basic",
           nameKey: "SKILL_VADER_BASIC_NAME",
           descKey: "SKILL_VADER_BASIC_DESC",
-          tierList: [{}, { isOmegaTier: true }, { isZetaTier: true }],
+          tierList: [{}, { isOmegaTier: true }, { isZetaTier: true }, { isOmicronTier: true }],
         }],
       });
     }
@@ -93,7 +112,7 @@ test("serves only authenticated, calculated live roster data", async (t) => {
     port: 0,
     comlinkUrl: "http://comlink.internal:3000",
     statsUrl: "http://stats.internal:3223",
-    assetUrl: "",
+    assetUrl: "http://ae2.internal:5000",
     publicBaseUrl: "https://gateway.example",
     apiKey: "test-secret",
     comlinkAccessKey: "",
@@ -117,14 +136,19 @@ test("serves only authenticated, calculated live roster data", async (t) => {
   assert.equal(body.source, "live");
   assert.equal(body.player.name, "Live Player");
   assert.equal(body.units.length, 1);
+  assert.equal(body.ships.length, 1);
   assert.equal(body.units[0].name, "Darth Vader");
+  assert.equal(body.ships[0].name, "Test Ship");
+  assert.equal(body.ships[0].image, "https://gateway.example/v1/assets/TESTSHIP");
   assert.equal(body.units[0].speed, 271);
   assert.equal(body.units[0].power, 35000);
   assert.equal(body.units[0].alignment, "Dark");
   assert.equal(body.units[0].source, "Comlink + SWGOH Stats");
   assert.equal(body.units[0].omegas, 1);
   assert.equal(body.units[0].zetas, 1);
+  assert.equal(body.units[0].omicrons, 1);
   assert.equal(body.summary.datacrons, 2);
+  assert.equal(body.summary.sixDotMods, 1);
   assert.equal(body.competitive.arenaRank, 123);
   assert.equal(body.competitive.fleetArenaRank, 45);
   assert.equal(body.competitive.gacSkillRating, 3612);
@@ -132,4 +156,5 @@ test("serves only authenticated, calculated live roster data", async (t) => {
   assert.equal(body.player.fleetArenaRank, 45);
   assert.equal(body.player.gacSkillRating, 3612);
   assert.equal(body.diagnostics.characters, 1);
+  assert.equal(body.diagnostics.ships, 1);
 });

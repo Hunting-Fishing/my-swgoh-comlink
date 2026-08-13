@@ -298,6 +298,16 @@ function makeSkillMap(skills) {
   return map;
 }
 
+function makeStatModMap(statMods) {
+  const map = new Map();
+  for (const statMod of statMods) {
+    if (!isRecord(statMod)) continue;
+    const id = firstText(statMod.id, statMod.definitionId, statMod.baseId);
+    if (id && !map.has(id)) map.set(id, statMod);
+  }
+  return map;
+}
+
 function humanize(value) {
   return String(value || "")
     .replace(/^(unit|skill|ability|category)_/i, "")
@@ -523,6 +533,36 @@ function skillInfoOf(unit, definition, skillMap, strings) {
   return { zetas, omegas, omicrons, abilities };
 }
 
+function sixDotModsOf(player, context) {
+  const statMods = context?.statMods instanceof Map ? context.statMods : new Map();
+  let equipped = 0;
+  let resolved = 0;
+  let sixDot = 0;
+
+  for (const rosterUnit of rosterOf(player)) {
+    const mods = asArray(rosterUnit?.equippedStatMod)
+      .concat(asArray(rosterUnit?.equippedStatMods));
+
+    for (const mod of mods) {
+      if (!isRecord(mod)) continue;
+      equipped += 1;
+
+      const definitionId = firstText(mod.definitionId, mod.defId);
+      const definition = definitionId ? statMods.get(definitionId) : null;
+      const rarity = finiteNumber(definition?.rarity, mod.rarity);
+
+      if (rarity > 0) {
+        resolved += 1;
+        if (rarity >= 6) sixDot += 1;
+      }
+    }
+  }
+
+  if (equipped === 0) return 0;
+  if (resolved === 0) return null;
+  return sixDot;
+}
+
 function originFor(request, config) {
   if (config.publicBaseUrl) return config.publicBaseUrl;
   const protocol = firstText(request.headers["x-forwarded-proto"], "https").split(",")[0];
@@ -607,6 +647,7 @@ function createGateway(config = loadConfig(), dependencies = {}) {
       const [dataPayload, localizationPayload] = await Promise.all([dataRequest, localizationRequest]);
       const definitions = findCollection(dataPayload, ["units", "unit", "unitData", "unitList"]);
       const skills = findCollection(dataPayload, ["skill", "skills", "skillData", "skillList"]);
+      const statMods = findCollection(dataPayload, ["statMod", "statMods", "statModData", "statModList"]);
       const unitMap = makeDefinitionMap(definitions);
 
       if (!unitMap.size) {
@@ -622,6 +663,7 @@ function createGateway(config = loadConfig(), dependencies = {}) {
       gameContext = {
         units: unitMap,
         skills: makeSkillMap(skills),
+        statMods: makeStatModMap(statMods),
         strings: parseLocalization(localizationPayload),
         assetVersion: assetVersion == null ? "" : String(assetVersion),
         expiresAt: now() + config.metadataCacheMs,
@@ -845,6 +887,12 @@ function createGateway(config = loadConfig(), dependencies = {}) {
     ].find(Array.isArray);
     const datacronCount = Array.isArray(datacronCollection) ? datacronCollection.length : null;
 
+    const sixDotCandidates = [
+      sixDotModsOf(calculatedPlayer, context),
+      sixDotModsOf(rawPlayer, context),
+    ].filter((value) => Number.isFinite(value));
+    const sixDotMods = sixDotCandidates.length ? Math.max(...sixDotCandidates) : null;
+
     const profile = {
       name: playerName,
       allyCode: String(calculatedPlayer.allyCode || rawPlayer.allyCode || allyCode),
@@ -866,6 +914,7 @@ function createGateway(config = loadConfig(), dependencies = {}) {
     };
     const summary = {
       ...(datacronCount !== null ? { datacrons: datacronCount } : {}),
+      ...(sixDotMods !== null ? { sixDotMods } : {}),
     };
 
     const body = {
