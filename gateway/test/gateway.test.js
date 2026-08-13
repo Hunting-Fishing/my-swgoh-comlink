@@ -3,7 +3,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const { once } = require("node:events");
-const { createGateway } = require("../server");
+const { createGateway, combatTypeOf, categoryIds } = require("../server");
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -11,6 +11,15 @@ function jsonResponse(body, status = 200) {
     headers: { "Content-Type": "application/json" },
   });
 }
+
+test("accepts current Comlink enum/list field shapes", () => {
+  const definition = {
+    combatType: "CHARACTER",
+    categoryIdList: ["alignment_dark", "role_attacker", "affiliation_sith"],
+  };
+  assert.equal(combatTypeOf(definition, {}), 1);
+  assert.deepEqual(categoryIds(definition), ["alignment_dark", "role_attacker", "affiliation_sith"]);
+});
 
 test("serves only authenticated, calculated live roster data", async (t) => {
   const player = {
@@ -49,16 +58,16 @@ test("serves only authenticated, calculated live roster data", async (t) => {
         units: [{
           baseId: "DARTHVADER",
           rarity: 1,
-          combatType: 1,
+          combatType: "CHARACTER",
           nameKey: "UNIT_DARTHVADER_NAME",
-          categoryId: ["alignment_dark", "role_attacker", "affiliation_empire", "affiliation_sith"],
-          skillReference: [{ skillId: "skill_vader_basic" }],
+          categoryIdList: ["alignment_dark", "role_attacker", "affiliation_empire", "affiliation_sith"],
+          skillReferenceList: [{ skillId: "skill_vader_basic" }],
         }],
         skill: [{
           id: "skill_vader_basic",
           nameKey: "SKILL_VADER_BASIC_NAME",
           descKey: "SKILL_VADER_BASIC_DESC",
-          tier: [{}, { isZetaTier: true }],
+          tierList: [{}, { isZetaTier: true }],
         }],
       });
     }
@@ -107,4 +116,5 @@ test("serves only authenticated, calculated live roster data", async (t) => {
   assert.equal(body.units[0].power, 35000);
   assert.equal(body.units[0].alignment, "Dark");
   assert.equal(body.units[0].source, "Comlink + SWGOH Stats");
+  assert.equal(body.diagnostics.characters, 1);
 });
