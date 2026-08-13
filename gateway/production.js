@@ -90,6 +90,35 @@ async function fetchBrotliJson(fetchImpl, url) {
   return JSON.parse(decompressed.toString("utf8"));
 }
 
+function sameService(url, baseUrl) {
+  if (!baseUrl) return false;
+  try {
+    const base = new URL(baseUrl);
+    return url.protocol === base.protocol && url.host === base.host;
+  } catch {
+    return false;
+  }
+}
+
+function ensureFlag(url, flag) {
+  const flags = new Set(
+    String(url.searchParams.get("flags") || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+  );
+  flags.add(flag);
+  url.searchParams.set("flags", [...flags].join(","));
+  return url;
+}
+
+function normalizeAe2AssetName(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^tex\./i, "")
+    .replace(/\.png$/i, "");
+}
+
 function createStaticGameDataLoader(fetchImpl = globalThis.fetch, env = process.env) {
   const baseUrl = String(env.SWGOH_GAMEDATA_BASE_URL || DEFAULT_GAMEDATA_BASE_URL).replace(/\/+$/, "");
   const cacheMs = positiveNumber(env.STATIC_GAMEDATA_CACHE_MS, DEFAULT_STATIC_CACHE_MS);
@@ -136,7 +165,7 @@ function createStaticGameDataLoader(fetchImpl = globalThis.fetch, env = process.
       };
 
       console.log(
-        `[gateway] GitHub gamedata ready version=${cached.gameVersion} units=${units.length} skills=${skills.length} strings=${Object.keys(strings).length}`
+        `[gateway] GitHub gamedata ready version=${cached.gameVersion} units=${units.length} skills=${skills.length} strings=${Object.keys(strings).length} assetVersion=${cached.assetVersion}`
       );
       return cached;
     })().finally(() => {
@@ -152,8 +181,24 @@ function createProductionFetch(config, fetchImpl = globalThis.fetch, env = proce
   const loadStaticGameData = createStaticGameDataLoader(fetchImpl, env);
 
   return async function productionFetch(input, options = {}) {
-    const url = input instanceof URL ? input : new URL(String(input));
+    const url = input instanceof URL ? new URL(input.href) : new URL(String(input));
     const method = String(options.method || "GET").toUpperCase();
+
+    // SWGOH Stats only calculates Galactic Power when calcGP/onlyGP is requested.
+    // Keep the full stat calculation, but always add calcGP for live player lookups.
+    if (method === "POST" && url.pathname === "/api" && sameService(url, config.statsUrl)) {
+      ensureFlag(url, "calcGP");
+      return fetchImpl(url, options);
+    }
+
+    // AE2 expects bundle names such as "charui_darthvader", while CG game data
+    // exposes thumbnailName as "tex.charui_darthvader". Strip the texture prefix.
+    if (method === "GET" && url.pathname.toLowerCase() === "/asset/single" && sameService(url, config.assetUrl)) {
+      const rawName = url.searchParams.get("assetName");
+      const assetName = normalizeAe2AssetName(rawName);
+      if (assetName) url.searchParams.set("assetName", assetName);
+      return fetchImpl(url, options);
+    }
 
     if (method === "POST" && ["/metadata", "/data", "/localization"].includes(url.pathname)) {
       try {
@@ -184,7 +229,7 @@ function createProductionFetch(config, fetchImpl = globalThis.fetch, env = proce
       }
     }
 
-    const response = await comlinkFetch(input, options);
+    const response = await comlinkFetch(url, options);
 
     if (method !== "POST" || url.pathname !== "/data" || !response.ok) return response;
 
@@ -216,6 +261,9 @@ module.exports = {
   collectionArray,
   createProductionFetch,
   createStaticGameDataLoader,
+  ensureFlag,
   localizationMap,
+  normalizeAe2AssetName,
   normalizeGameData,
+  sameService,
 };
