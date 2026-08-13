@@ -26,6 +26,12 @@ test("serves only authenticated, calculated live roster data", async (t) => {
     name: "Live Player",
     allyCode: "123456789",
     level: 85,
+    pvpProfile: [
+      { tab: 1, rank: 123 },
+      { tab: 2, rank: 45 },
+    ],
+    playerRating: { playerSkillRating: { skillRating: 3612 } },
+    datacron: [{ id: "dc-1" }, { id: "dc-2" }],
     rosterUnit: [{
       id: "owned-unit-1",
       definitionId: "DARTHVADER:SEVEN_STAR",
@@ -67,7 +73,7 @@ test("serves only authenticated, calculated live roster data", async (t) => {
           id: "skill_vader_basic",
           nameKey: "SKILL_VADER_BASIC_NAME",
           descKey: "SKILL_VADER_BASIC_DESC",
-          tierList: [{}, { isZetaTier: true }],
+          tierList: [{}, { isOmegaTier: true }, { isZetaTier: true }],
         }],
       });
     }
@@ -116,5 +122,14 @@ test("serves only authenticated, calculated live roster data", async (t) => {
   assert.equal(body.units[0].power, 35000);
   assert.equal(body.units[0].alignment, "Dark");
   assert.equal(body.units[0].source, "Comlink + SWGOH Stats");
+  assert.equal(body.units[0].omegas, 1);
+  assert.equal(body.units[0].zetas, 1);
+  assert.equal(body.summary.datacrons, 2);
+  assert.equal(body.competitive.arenaRank, 123);
+  assert.equal(body.competitive.fleetArenaRank, 45);
+  assert.equal(body.competitive.gacSkillRating, 3612);
+  assert.equal(body.player.arenaRank, 123);
+  assert.equal(body.player.fleetArenaRank, 45);
+  assert.equal(body.player.gacSkillRating, 3612);
   assert.equal(body.diagnostics.characters, 1);
 });

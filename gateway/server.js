@@ -465,9 +465,27 @@ function ownedSkills(unit) {
   return map;
 }
 
+function tierHasUpgrade(tier, kind) {
+  if (!isRecord(tier)) return false;
+  const recipeId = String(tier.recipeId || "").toLowerCase();
+  if (kind === "zeta" && (tier.isZetaTier === true || recipeId === "abilitymaterial_zeta")) return true;
+  if (kind === "omega" && (tier.isOmegaTier === true || recipeId === "abilitymaterial_omega")) return true;
+  if (kind === "omicron" && (tier.isOmicronTier === true || recipeId === "abilitymaterial_omicron")) return true;
+
+  return new RegExp(kind, "i").test([
+    tier.powerAdditiveTag,
+    tier.powerOverrideTag,
+    tier.name,
+    tier.id,
+    tier.tierName,
+    tier.recipeId,
+  ].filter(Boolean).join(" "));
+}
+
 function skillInfoOf(unit, definition, skillMap, strings) {
   const owned = ownedSkills(unit);
   let zetas = 0;
+  let omegas = 0;
   let omicrons = 0;
   const abilities = [];
 
@@ -478,28 +496,31 @@ function skillInfoOf(unit, definition, skillMap, strings) {
 
     const skill = skillMap.get(skillId) || {};
     const ownedTier = owned.get(skillId) || 0;
+    const playerTier = Math.max(0, ownedTier + 2);
     const tiers = skillTiers(skill);
-    const active = tiers.slice(0, Math.max(0, ownedTier));
+    const active = tiers.filter((tier, index) => isRecord(tier) && index + 2 <= playerTier);
 
-    zetas += active.filter((tier) =>
-      tier?.isZetaTier === true || /zeta/i.test(String(tier?.powerAdditiveTag || tier?.name || ""))
-    ).length;
-    omicrons += active.filter((tier) =>
-      tier?.isOmicronTier === true || /omicron/i.test(String(tier?.powerAdditiveTag || tier?.name || ""))
-    ).length;
+    zetas += active.filter((tier) => tierHasUpgrade(tier, "zeta")).length;
+    omegas += active.filter((tier) => tierHasUpgrade(tier, "omega")).length;
+    omicrons += active.filter((tier) => tierHasUpgrade(tier, "omicron")).length;
 
     const nameKey = firstText(skill.nameKey, reference.nameKey);
     const descKey = firstText(skill.descKey, skill.descriptionKey, reference.descKey);
     abilities.push({
+      id: skillId,
       type: humanize(firstText(skill.abilityType, skillId.split("_")[0], "ability")),
       name: localized(strings, nameKey, skill.name, humanize(skillId)),
-      note: localized(strings, descKey, skill.description, `Live ability tier ${ownedTier}`),
+      note: localized(strings, descKey, skill.description, `Live ability tier ${playerTier}`),
       tier: ownedTier,
+      displayTier: playerTier,
+      zeta: active.some((tier) => tierHasUpgrade(tier, "zeta")),
+      omega: active.some((tier) => tierHasUpgrade(tier, "omega")),
+      omicron: active.some((tier) => tierHasUpgrade(tier, "omicron")),
       ...(firstText(skill.icon, reference.icon) ? { image: firstText(skill.icon, reference.icon) } : {}),
     });
   }
 
-  return { zetas, omicrons, abilities };
+  return { zetas, omegas, omicrons, abilities };
 }
 
 function originFor(request, config) {
@@ -638,7 +659,7 @@ function createGateway(config = loadConfig(), dependencies = {}) {
     );
 
     let image;
-    if (config.assetUrl && context.assetVersion && publicOrigin && type === CHARACTER_COMBAT_TYPE) {
+    if (config.assetUrl && context.assetVersion && publicOrigin) {
       allowedAssets.set(baseId, {
         assetName,
         version: context.assetVersion,
@@ -668,6 +689,7 @@ function createGateway(config = loadConfig(), dependencies = {}) {
       level,
       stars,
       zetas: skillInfo.zetas,
+      omegas: skillInfo.omegas,
       omicrons: skillInfo.omicrons,
       abilities: skillInfo.abilities,
     };
@@ -781,14 +803,47 @@ function createGateway(config = loadConfig(), dependencies = {}) {
       rawPlayer.guild?.name
     );
 
+    const pvpRank = (player, tab) => {
+      const entry = asArray(player?.pvpProfile).find((item) => Number(item?.tab) === tab);
+      return entry ? finiteNumber(entry.rank) : 0;
+    };
+
     const arenaRank = finiteNumber(
       calculatedPlayer.arenaRank,
       calculatedPlayer.arena?.char?.rank,
       calculatedPlayer.arena?.character?.rank,
       rawPlayer.arenaRank,
       rawPlayer.arena?.char?.rank,
-      rawPlayer.arena?.character?.rank
+      rawPlayer.arena?.character?.rank,
+      pvpRank(calculatedPlayer, 1),
+      pvpRank(rawPlayer, 1)
     );
+    const fleetArenaRank = finiteNumber(
+      calculatedPlayer.fleetArenaRank,
+      calculatedPlayer.arena?.fleet?.rank,
+      rawPlayer.fleetArenaRank,
+      rawPlayer.arena?.fleet?.rank,
+      pvpRank(calculatedPlayer, 2),
+      pvpRank(rawPlayer, 2)
+    );
+    const gacSkillRating = finiteNumber(
+      calculatedPlayer.playerRating?.playerSkillRating?.skillRating,
+      calculatedPlayer.playerSkillRating?.skillRating,
+      calculatedPlayer.gacSkillRating,
+      rawPlayer.playerRating?.playerSkillRating?.skillRating,
+      rawPlayer.playerSkillRating?.skillRating,
+      rawPlayer.gacSkillRating
+    );
+
+    const datacronCollection = [
+      calculatedPlayer.datacron,
+      calculatedPlayer.datacrons,
+      calculatedPlayer.datacronList,
+      rawPlayer.datacron,
+      rawPlayer.datacrons,
+      rawPlayer.datacronList,
+    ].find(Array.isArray);
+    const datacronCount = Array.isArray(datacronCollection) ? datacronCollection.length : null;
 
     const profile = {
       name: playerName,
@@ -799,13 +854,26 @@ function createGateway(config = loadConfig(), dependencies = {}) {
       level: playerLevel,
       ...(guildName ? { guildName } : {}),
       ...(arenaRank ? { arenaRank } : {}),
+      ...(fleetArenaRank ? { fleetArenaRank } : {}),
+      ...(gacSkillRating ? { gacSkillRating } : {}),
       updatedAt: new Date(now()).toISOString(),
+    };
+
+    const competitive = {
+      ...(arenaRank ? { arenaRank } : {}),
+      ...(fleetArenaRank ? { fleetArenaRank } : {}),
+      ...(gacSkillRating ? { gacSkillRating } : {}),
+    };
+    const summary = {
+      ...(datacronCount !== null ? { datacrons: datacronCount } : {}),
     };
 
     const body = {
       player: profile,
       units: characters,
       ships,
+      ...(Object.keys(summary).length ? { summary } : {}),
+      ...(Object.keys(competitive).length ? { competitive } : {}),
       source: "live",
       fetchedAt: profile.updatedAt,
       diagnostics: {
