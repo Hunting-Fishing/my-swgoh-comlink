@@ -111,7 +111,7 @@ function createStaticGameDataLoader(fetchImpl = globalThis.fetch, env = process.
       }
 
       const [unitsPayload, skillsPayload, localizationPayload] = await Promise.all([
-        fetchBrotliJson(fetchImpl, `${baseUrl}/units.json.br`),
+        fetchJson(fetchImpl, `${baseUrl}/units_gas.json`),
         fetchJson(fetchImpl, `${baseUrl}/skill.json`),
         fetchBrotliJson(fetchImpl, `${baseUrl}/Loc_ENG_US.txt.json.br`),
       ]);
@@ -120,7 +120,7 @@ function createStaticGameDataLoader(fetchImpl = globalThis.fetch, env = process.
       const skills = collectionArray(skillsPayload);
       const strings = localizationMap(localizationPayload);
 
-      if (!units.length) throw new Error("GitHub gamedata units.json.br contained no units");
+      if (!units.length) throw new Error("GitHub gamedata units_gas.json contained no player-obtainable units");
       if (!skills.length) throw new Error("GitHub gamedata skill.json contained no skills");
 
       cached = {
