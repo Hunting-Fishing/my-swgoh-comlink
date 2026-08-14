@@ -17,13 +17,15 @@ function jsonResponse(body, status = 200) {
   });
 }
 
-test("current CG ability_mat_Omega recipes are classified structurally", () => {
+test("current CG ability material recipes are classified across nested recipe shapes", () => {
   const recipe = {
     id: "SKILLRECIPE_BASIC_T7",
-    ingredients: [
-      { id: "GRIND", minQuantity: 10000 },
-      { id: "ability_mat_Omega", minQuantity: 3 },
-    ],
+    cost: {
+      materialReference: [
+        { id: "GRIND", minQuantity: 10000 },
+        { id: "ability_mat_Omega", minQuantity: 3 },
+      ],
+    },
   };
   assert.deepEqual([...upgradeKindsForRecipe(recipe)], ["omega"]);
 
@@ -35,16 +37,16 @@ test("current CG ability_mat_Omega recipes are classified structurally", () => {
     tier: [
       { recipeId: "SKILLRECIPE_BASIC_T2" },
       { recipeId: "SKILLRECIPE_BASIC_T7" },
-      { recipeId: "SKILLRECIPE_BASIC_T8", isZetaTier: true },
-      { recipeId: "SKILLRECIPE_BASIC_T9", isOmicronTier: true },
+      { recipeId: "SKILLRECIPE_SPECIAL_T7_ZETA", isZetaTier: true },
+      { recipeId: "SKILLRECIPE_SPECIAL_T7_OMICRON", isOmicronTier: true },
     ],
   }, recipeKinds);
 
-  assert.equal(skill.tier.length, 5);
-  assert.equal(skill.tier[0], null);
-  assert.equal(skill.tier[2].isOmegaTier, true);
-  assert.equal(skill.tier[3].isZetaTier, true);
-  assert.equal(skill.tier[4].isOmicronTier, true);
+  assert.equal(skill.tier.length, 4);
+  assert.equal(skill.tier[0].recipeId, "SKILLRECIPE_BASIC_T2");
+  assert.equal(skill.tier[1].isOmegaTier, true);
+  assert.equal(skill.tier[2].isZetaTier, true);
+  assert.equal(skill.tier[3].isOmicronTier, true);
 });
 
 test("production gamedata includes recipes and stat mods for upgrade/material resolution", async () => {
@@ -65,7 +67,7 @@ test("production gamedata includes recipes and stat mods for upgrade/material re
     if (url.pathname.endsWith("/recipe.json")) {
       return jsonResponse({ data: [{
         id: "SKILLRECIPE_BASIC_T7",
-        ingredients: [{ id: "GRIND", minQuantity: 10000 }, { id: "ability_mat_Omega", minQuantity: 3 }],
+        cost: { materialReference: [{ id: "GRIND", minQuantity: 10000 }, { id: "ability_mat_Omega", minQuantity: 3 }] },
       }] });
     }
     if (url.pathname.endsWith("/statMod.json")) {
@@ -98,10 +100,10 @@ test("production gamedata includes recipes and stat mods for upgrade/material re
   assert.equal(body.units.length, 1);
   assert.equal(body.skill.length, 1);
   assert.equal(body.recipe.length, 1);
-  assert.equal(body.recipe[0].ingredients[1].id, "ability_mat_Omega");
+  assert.equal(body.recipe[0].cost.materialReference[1].id, "ability_mat_Omega");
   assert.deepEqual(body.recipe[0].gatewayUpgradeMaterials, ["omega"]);
-  assert.equal(body.skill[0].tier[0], null);
-  assert.equal(body.skill[0].tier[1].isOmegaTier, true);
+  assert.equal(body.skill[0].tier.length, 1);
+  assert.equal(body.skill[0].tier[0].isOmegaTier, true);
   assert.equal(body.statMod.length, 1);
   assert.ok(requested.some((path) => path.endsWith("/recipe.json")));
   assert.ok(requested.some((path) => path.endsWith("/statMod.json")));
