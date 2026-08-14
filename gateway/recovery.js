@@ -32,13 +32,18 @@ function mergeUnit(rawUnit, calculatedUnit) {
 
   const merged = { ...rawUnit, ...calculatedUnit };
 
-  // Calculated stats are additive enrichment. Never let swgoh-stats erase live
-  // ownership fields that the gateway needs for abilities, relics and mods.
+  // SWGOH Stats is additive calculation only. Comlink owns every field that
+  // represents what the player actually has equipped/unlocked/upgraded. A
+  // calculated empty array is still capable of erasing live ownership, so raw
+  // values must win whenever Comlink supplied them -- not only when Stats left
+  // the field undefined.
   for (const key of [
     "skill",
     "skills",
     "equippedStatMod",
     "equippedStatMods",
+    "purchasedAbilityId",
+    "purchasedAbilityIds",
     "relic",
     "definitionId",
     "defId",
@@ -46,7 +51,7 @@ function mergeUnit(rawUnit, calculatedUnit) {
     "currentLevel",
     "currentTier",
   ]) {
-    if (merged[key] === undefined && rawUnit[key] !== undefined) merged[key] = rawUnit[key];
+    if (rawUnit[key] !== undefined) merged[key] = rawUnit[key];
   }
 
   return merged;
