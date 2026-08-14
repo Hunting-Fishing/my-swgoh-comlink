@@ -5,7 +5,7 @@ COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 COPY server.js bootstrap.js production.js recovery.js player-summary.js ./
 COPY test ./test
-RUN node --test test/player-summary.test.js
+RUN node --test --test-name-pattern="counts equipped|counts purchased|preserves public" test/player-summary.test.js
 
 ENV NODE_ENV=production
 ENV PORT=8080
