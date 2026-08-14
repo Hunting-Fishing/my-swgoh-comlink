@@ -3,6 +3,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const {
+  displayDivision,
   equippedModCount,
   gacRating,
   normalizeProfileStats,
@@ -27,7 +28,7 @@ const player = {
   playerRating: {
     playerSkillRating: { skillRating: 4123 },
     league: "KYBER",
-    division: 2,
+    division: 20,
   },
   profileStat: [
     { id: "STAT_GP", value: "10000000" },
@@ -38,8 +39,8 @@ const player = {
   selectedPlayerTitle: { id: "title-2" },
   selectedPlayerPortrait: { id: "portrait-1" },
   seasonStatus: [
-    { seasonId: "old", league: "AURODIUM", division: 3, seasonPoints: 100, rank: 44, joinTime: "1000", endTime: "2000" },
-    { seasonId: "new", league: "KYBER", division: 2, seasonPoints: 900, rank: 12, joinTime: "3000", endTime: "4000" },
+    { seasonId: "old", league: "AURODIUM", division: 15, seasonPoints: 100, rank: 44, joinTime: "1000", endTime: "2000" },
+    { seasonId: "new", league: "KYBER", division: 20, seasonPoints: 900, rank: 12, joinTime: "3000", endTime: "4000" },
   ],
 };
 
@@ -53,11 +54,21 @@ test("counts purchased special abilities with unit provenance", () => {
   ]);
 });
 
+test("maps raw GAC division ids to displayed divisions", () => {
+  assert.equal(displayDivision(5), 5);
+  assert.equal(displayDivision(10), 4);
+  assert.equal(displayDivision(15), 3);
+  assert.equal(displayDivision(20), 2);
+  assert.equal(displayDivision(25), 1);
+  assert.equal(displayDivision(2), 2);
+});
+
 test("extracts current GAC skill rating league and division", () => {
   assert.deepEqual(gacRating(player), {
     skillRating: 4123,
     league: "KYBER",
     division: 2,
+    divisionId: 20,
   });
 });
 
@@ -68,8 +79,11 @@ test("preserves public profile statistics", () => {
   ]);
 });
 
-test("sorts recent GAC seasons newest first", () => {
-  assert.equal(normalizeSeasonStatus(player)[0].seasonId, "new");
+test("sorts recent GAC seasons newest first and maps division", () => {
+  const seasons = normalizeSeasonStatus(player);
+  assert.equal(seasons[0].seasonId, "new");
+  assert.equal(seasons[0].division, 2);
+  assert.equal(seasons[0].divisionId, 20);
 });
 
 test("builds summary without inventing private inventory", () => {
