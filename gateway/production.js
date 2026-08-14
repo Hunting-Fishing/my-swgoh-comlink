@@ -23,7 +23,7 @@ function collectionArray(value, depth = 0) {
   if (Array.isArray(value)) return value;
   if (!isRecord(value) || depth > 4) return [];
 
-  for (const key of ["data", "items", "values", "unit", "units", "skill", "skills", "recipe", "recipes", "statMod", "statMods", "list", "entries"]) {
+  for (const key of ["data", "items", "values", "unit", "units", "skill", "skills", "recipe", "recipes", "material", "materials", "statMod", "statMods", "list", "entries"]) {
     if (value[key] !== undefined) {
       const nested = collectionArray(value[key], depth + 1);
       if (nested.length) return nested;
@@ -57,11 +57,13 @@ function normalizeGameData(payload) {
   const units = collectionArray(payload.units ?? payload.unit ?? payload.unitData ?? payload.unitList);
   const skills = collectionArray(payload.skill ?? payload.skills ?? payload.skillData ?? payload.skillList);
   const recipes = collectionArray(payload.recipe ?? payload.recipes ?? payload.recipeData ?? payload.recipeList);
+  const materials = collectionArray(payload.material ?? payload.materials ?? payload.materialData ?? payload.materialList);
   const statMods = collectionArray(payload.statMod ?? payload.statMods ?? payload.statModData ?? payload.statModList);
 
   if (units.length) normalized.units = units;
   if (skills.length) normalized.skill = skills;
   if (recipes.length) normalized.recipe = recipes;
+  if (materials.length) normalized.material = materials;
   if (statMods.length) normalized.statMod = statMods;
 
   for (const key of ["data", "payload", "gameData", "result", "response"]) {
@@ -123,32 +125,113 @@ function normalizeMaterialId(value) {
 
 function recipeIngredientIds(recipe) {
   if (!isRecord(recipe)) return [];
-  const ingredients = []
-    .concat(Array.isArray(recipe.ingredients) ? recipe.ingredients : [])
-    .concat(Array.isArray(recipe.ingredient) ? recipe.ingredient : [])
-    .concat(Array.isArray(recipe.materialReference) ? recipe.materialReference : [])
-    .concat(Array.isArray(recipe.materials) ? recipe.materials : []);
+  const ids = new Set();
 
-  return ingredients.map((entry) => {
-    if (typeof entry === "string") return entry;
-    if (!isRecord(entry)) return "";
-    return entry.id || entry.materialId || entry.itemId || entry.definitionId || "";
-  }).filter(Boolean);
+  function visit(node, parentKey = "", depth = 0) {
+    if (node == null || depth > 9) return;
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child, parentKey, depth + 1);
+      return;
+    }
+    if (!isRecord(node)) return;
+
+    for (const [key, child] of Object.entries(node)) {
+      const context = `${parentKey} ${key}`;
+      if (typeof child === "string") {
+        const compact = normalizeMaterialId(child);
+        const materialContext = /(material|ingredient|item|cost)/i.test(context);
+        const idKey = /^(id|materialid|itemid|definitionid)$/i.test(key);
+        if (compact.startsWith("abilitymaterial") || (materialContext && idKey)) ids.add(child.trim());
+      } else {
+        visit(child, context, depth + 1);
+      }
+    }
+  }
+
+  visit(recipe);
+  return [...ids];
 }
 
-function upgradeKindsForRecipe(recipe) {
+function materialIdOf(material) {
+  if (!isRecord(material)) return "";
+  return String(material.id || material.materialId || material.definitionId || material.baseId || "").trim();
+}
+
+function materialSemanticText(material, strings = {}) {
+  if (!isRecord(material)) return "";
+  const pieces = [JSON.stringify(material)];
+  const seen = new Set();
+
+  function visit(node, depth = 0) {
+    if (node == null || depth > 7) return;
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child, depth + 1);
+      return;
+    }
+    if (!isRecord(node)) return;
+
+    for (const child of Object.values(node)) {
+      if (typeof child === "string") {
+        if (seen.has(child)) continue;
+        seen.add(child);
+        const localized = strings[child];
+        if (typeof localized === "string" && localized.trim()) pieces.push(localized.trim());
+      } else {
+        visit(child, depth + 1);
+      }
+    }
+  }
+
+  visit(material);
+  return pieces.join(" ");
+}
+
+function upgradeKindsForMaterial(material, strings = {}) {
+  const kinds = new Set();
+  if (!isRecord(material)) return kinds;
+
+  const id = normalizeMaterialId(materialIdOf(material));
+  const semantic = normalizeMaterialId(materialSemanticText(material, strings));
+  const abilityMaterial = id.startsWith("abilitymaterial") || semantic.includes("abilitymaterial");
+  if (!abilityMaterial) return kinds;
+
+  if (semantic.includes("omega")) kinds.add("omega");
+  if (semantic.includes("zeta")) kinds.add("zeta");
+  if (semantic.includes("omicron")) kinds.add("omicron");
+  return kinds;
+}
+
+function buildMaterialKindMap(materials, strings = {}) {
+  const map = new Map();
+  for (const material of materials) {
+    if (!isRecord(material)) continue;
+    const id = materialIdOf(material);
+    if (!id) continue;
+    const kinds = upgradeKindsForMaterial(material, strings);
+    if (kinds.size) map.set(id, kinds);
+  }
+  return map;
+}
+
+function upgradeKindsForRecipe(recipe, materialKinds = new Map()) {
   const kinds = new Set();
   if (!isRecord(recipe)) return kinds;
 
-  // Recipe shapes have changed over time. Scan the complete normalized recipe so
-  // nested material references are detected regardless of the current field name.
+  for (const ingredientId of recipeIngredientIds(recipe)) {
+    const resolved = materialKinds.get(ingredientId);
+    if (!resolved) continue;
+    for (const kind of resolved) kinds.add(kind);
+  }
+
+  // Legacy game-data releases exposed semantic material ids directly in the
+  // recipe. Keep that path so older snapshots remain readable.
   const compact = normalizeMaterialId(JSON.stringify(recipe));
   if (compact.includes("abilitymatomega") || compact.includes("abilitymaterialomega")) kinds.add("omega");
   if (compact.includes("abilitymatzeta") || compact.includes("abilitymaterialzeta")) kinds.add("zeta");
   if (compact.includes("abilitymatomicron") || compact.includes("abilitymaterialomicron")) kinds.add("omicron");
 
-  // Current recipe IDs also explicitly identify the exceptional Zeta/Omicron
-  // variants. Keep this as a deterministic fallback if material nesting changes.
+  // Exceptional Zeta/Omicron recipes often carry semantic recipe ids. Omega
+  // recipes generally do not, which is why resolving material.json is required.
   const recipeId = String(recipe.id || recipe.recipeId || recipe.baseId || "").toUpperCase();
   if (/(?:^|_)ZETA(?:_|$)/.test(recipeId)) kinds.add("zeta");
   if (/(?:^|_)OMICRON(?:_|$)/.test(recipeId)) kinds.add("omicron");
@@ -161,17 +244,14 @@ function recipeIdOf(value) {
   return String(value.id || value.recipeId || value.baseId || "").trim();
 }
 
-function prepareRecipes(recipes) {
+function prepareRecipes(recipes, materialKinds = new Map()) {
   const recipeKinds = new Map();
   const prepared = recipes.map((recipe) => {
     if (!isRecord(recipe)) return recipe;
-    const kinds = upgradeKindsForRecipe(recipe);
+    const kinds = upgradeKindsForRecipe(recipe, materialKinds);
     const id = recipeIdOf(recipe);
     if (id) recipeKinds.set(id, kinds);
     if (!kinds.size) return recipe;
-    // server.js supports explicit tier flags first and also scans recipe JSON as a
-    // compatibility fallback. Expose normalized words so current and legacy CG
-    // material IDs are both recognized.
     return { ...recipe, gatewayUpgradeMaterials: [...kinds] };
   });
   return { prepared, recipeKinds };
@@ -286,10 +366,11 @@ function createStaticGameDataLoader(fetchImpl = globalThis.fetch, env = process.
         return cached;
       }
 
-      const [unitsPayload, skillsPayload, recipesPayload, statModsPayload, localizationPayload] = await Promise.all([
+      const [unitsPayload, skillsPayload, recipesPayload, materialsPayload, statModsPayload, localizationPayload] = await Promise.all([
         fetchJson(fetchImpl, `${baseUrl}/units_gas.json`),
         fetchJson(fetchImpl, `${baseUrl}/skill.json`),
         fetchJson(fetchImpl, `${baseUrl}/recipe.json`),
+        fetchJson(fetchImpl, `${baseUrl}/material.json`),
         fetchJson(fetchImpl, `${baseUrl}/statMod.json`),
         fetchBrotliJson(fetchImpl, `${baseUrl}/Loc_ENG_US.txt.json.br`),
       ]);
@@ -297,9 +378,11 @@ function createStaticGameDataLoader(fetchImpl = globalThis.fetch, env = process.
       const units = collectionArray(unitsPayload);
       const rawSkills = collectionArray(skillsPayload);
       const rawRecipes = collectionArray(recipesPayload);
+      const materials = collectionArray(materialsPayload);
       const statMods = collectionArray(statModsPayload);
       const strings = localizationMap(localizationPayload);
-      const { prepared: recipes, recipeKinds } = prepareRecipes(rawRecipes);
+      const materialKinds = buildMaterialKindMap(materials, strings);
+      const { prepared: recipes, recipeKinds } = prepareRecipes(rawRecipes, materialKinds);
       const skills = rawSkills.map((skill) => prepareSkillForRosterSemantics(skill, recipeKinds));
       const upgradeRecipeCounts = { omega: 0, zeta: 0, omicron: 0 };
       for (const kinds of recipeKinds.values()) {
@@ -311,6 +394,7 @@ function createStaticGameDataLoader(fetchImpl = globalThis.fetch, env = process.
       if (!units.length) throw new Error("GitHub gamedata units_gas.json contained no player-obtainable units");
       if (!skills.length) throw new Error("GitHub gamedata skill.json contained no skills");
       if (!recipes.length) throw new Error("GitHub gamedata recipe.json contained no recipes");
+      if (!materials.length) throw new Error("GitHub gamedata material.json contained no materials");
 
       cached = {
         versionKey,
@@ -320,6 +404,7 @@ function createStaticGameDataLoader(fetchImpl = globalThis.fetch, env = process.
         units,
         skills,
         recipes,
+        materials,
         statMods,
         strings,
         loadedAt: new Date(now).toISOString(),
@@ -328,6 +413,7 @@ function createStaticGameDataLoader(fetchImpl = globalThis.fetch, env = process.
 
       console.log(
         `[gateway] GitHub gamedata ready version=${cached.gameVersion} units=${units.length} skills=${skills.length} recipes=${recipes.length} ` +
+        `materials=${materials.length} classifiedAbilityMaterials=${materialKinds.size} ` +
         `upgradeRecipes=omega:${upgradeRecipeCounts.omega}/zeta:${upgradeRecipeCounts.zeta}/omicron:${upgradeRecipeCounts.omicron} ` +
         `statMods=${statMods.length} strings=${Object.keys(strings).length} assetVersion=${cached.assetVersion}`
       );
@@ -381,6 +467,7 @@ function createProductionFetch(config, fetchImpl = globalThis.fetch, env = proce
             units: gameData.units,
             skill: gameData.skills,
             recipe: gameData.recipes,
+            material: gameData.materials,
             statMod: gameData.statMods,
             version: gameData.gameVersion,
             source: "github-gamedata",
@@ -406,7 +493,8 @@ function createProductionFetch(config, fetchImpl = globalThis.fetch, env = proce
       const unitCount = Array.isArray(normalized?.units) ? normalized.units.length : 0;
       const skillCount = Array.isArray(normalized?.skill) ? normalized.skill.length : 0;
       const recipeCount = Array.isArray(normalized?.recipe) ? normalized.recipe.length : 0;
-      console.log(`[gateway] normalized fallback Comlink /data collections (units=${unitCount}, skills=${skillCount}, recipes=${recipeCount})`);
+      const materialCount = Array.isArray(normalized?.material) ? normalized.material.length : 0;
+      console.log(`[gateway] normalized fallback Comlink /data collections (units=${unitCount}, skills=${skillCount}, recipes=${recipeCount}, materials=${materialCount})`);
       return jsonResponse(normalized);
     } catch (error) {
       console.warn(`[gateway] could not normalize fallback Comlink /data response: ${error?.message || error}`);
@@ -427,12 +515,14 @@ if (require.main === module) start();
 
 module.exports = {
   assetFallbackCandidates,
+  buildMaterialKindMap,
   collectionArray,
   createProductionFetch,
   createStaticGameDataLoader,
   ensureFlag,
   fetchAe2AssetWithFallback,
   localizationMap,
+  materialSemanticText,
   normalizeAe2AssetName,
   normalizeGameData,
   normalizeMaterialId,
@@ -440,5 +530,6 @@ module.exports = {
   prepareSkillForRosterSemantics,
   recipeIngredientIds,
   sameService,
+  upgradeKindsForMaterial,
   upgradeKindsForRecipe,
 };
