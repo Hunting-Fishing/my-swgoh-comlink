@@ -2,6 +2,7 @@
 
 const http = require("node:http");
 const crypto = require("node:crypto");
+const { publicPlayerSummary } = require("./player-summary");
 
 const MAX_BODY_BYTES = 100 * 1024 * 1024;
 const CHARACTER_COMBAT_TYPE = 1;
@@ -360,6 +361,10 @@ function humanize(value) {
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+function normalizeMaterialId(value) {
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
 function localized(strings, key, ...fallbacks) {
   const lookup = String(key || "");
   const translated = strings.get(lookup);
@@ -522,6 +527,11 @@ function tierHasUpgrade(tier, kind, recipeMap = new Map()) {
   if (!isRecord(tier)) return false;
   const recipeId = firstText(tier.recipeId, tier.recipe?.id, tier.recipeReference);
   const recipe = recipeId ? recipeMap.get(recipeId) : null;
+
+  if (kind === "zeta" && tier.isZetaTier === true) return true;
+  if (kind === "omega" && tier.isOmegaTier === true) return true;
+  if (kind === "omicron" && tier.isOmicronTier === true) return true;
+
   const searchable = [
     tier.powerAdditiveTag,
     tier.powerOverrideTag,
@@ -531,14 +541,11 @@ function tierHasUpgrade(tier, kind, recipeMap = new Map()) {
     tier.recipeId,
     recipe ? JSON.stringify(recipe) : "",
   ].filter(Boolean).join(" ");
+  const compact = normalizeMaterialId(searchable);
 
-  if (kind === "zeta" && tier.isZetaTier === true) return true;
-  if (kind === "omega" && tier.isOmegaTier === true) return true;
-  if (kind === "omicron" && tier.isOmicronTier === true) return true;
-
-  if (kind === "zeta") return /abilitymaterial[_-]?zeta|\bzeta\b/i.test(searchable);
-  if (kind === "omega") return /abilitymaterial[_-]?omega|\bomega\b/i.test(searchable);
-  if (kind === "omicron") return /abilitymaterial[_-]?omicron|\bomicron\b/i.test(searchable);
+  if (kind === "zeta") return compact.includes("abilitymatzeta") || compact.includes("abilitymaterialzeta") || compact.includes("zeta");
+  if (kind === "omega") return compact.includes("abilitymatomega") || compact.includes("abilitymaterialomega") || compact.includes("omega");
+  if (kind === "omicron") return compact.includes("abilitymatomicron") || compact.includes("abilitymaterialomicron") || compact.includes("omicron");
   return false;
 }
 
@@ -747,6 +754,11 @@ function createGateway(config = loadConfig(), dependencies = {}) {
     const skillInfo = skillInfoOf(rosterUnit, definition, context.skills, context.strings, context.recipes);
     const publicOrigin = originFor(request, config);
     const assetName = assetKeyOf(definition, baseId);
+    const equippedMods = asArray(rosterUnit?.equippedStatMod).length || asArray(rosterUnit?.equippedStatMods).length;
+    const purchasedAbilityIds = asArray(rosterUnit?.purchasedAbilityId)
+      .concat(asArray(rosterUnit?.purchasedAbilityIds))
+      .map((entry) => typeof entry === "string" ? entry : firstText(entry?.id, entry?.abilityId, entry?.definitionId))
+      .filter(Boolean);
 
     let image;
     if (config.assetUrl && context.assetVersion && publicOrigin && assetName) {
@@ -778,6 +790,8 @@ function createGateway(config = loadConfig(), dependencies = {}) {
       gear,
       level,
       stars,
+      equippedMods,
+      purchasedAbilityIds,
       zetas: skillInfo.zetas,
       omegas: skillInfo.omegas,
       omicrons: skillInfo.omicrons,
@@ -916,13 +930,15 @@ function createGateway(config = loadConfig(), dependencies = {}) {
       pvpRank(calculatedPlayer, 2),
       pvpRank(rawPlayer, 2)
     );
+    const publicSummary = publicPlayerSummary(rawPlayer);
     const gacSkillRating = finiteNumber(
       calculatedPlayer.playerRating?.playerSkillRating?.skillRating,
       calculatedPlayer.playerSkillRating?.skillRating,
       calculatedPlayer.gacSkillRating,
       rawPlayer.playerRating?.playerSkillRating?.skillRating,
       rawPlayer.playerSkillRating?.skillRating,
-      rawPlayer.gacSkillRating
+      rawPlayer.gacSkillRating,
+      publicSummary.competitive?.gacSkillRating
     );
 
     const datacronCollection = [
@@ -952,25 +968,54 @@ function createGateway(config = loadConfig(), dependencies = {}) {
       ...(arenaRank ? { arenaRank } : {}),
       ...(fleetArenaRank ? { fleetArenaRank } : {}),
       ...(gacSkillRating ? { gacSkillRating } : {}),
+      ...(publicSummary.competitive?.gacLeague ? { gacLeague: publicSummary.competitive.gacLeague } : {}),
+      ...(publicSummary.competitive?.gacDivision ? { gacDivision: publicSummary.competitive.gacDivision } : {}),
       updatedAt: new Date(now()).toISOString(),
     };
 
     const competitive = {
+      ...publicSummary.competitive,
       ...(arenaRank ? { arenaRank } : {}),
       ...(fleetArenaRank ? { fleetArenaRank } : {}),
       ...(gacSkillRating ? { gacSkillRating } : {}),
     };
     const summary = {
+      ...publicSummary.summary,
       ...(datacronCount !== null ? { datacrons: datacronCount } : {}),
       ...(sixDotMods !== null ? { sixDotMods } : {}),
+    };
+    const capabilities = {
+      version: 1,
+      liveRoster: true,
+      profileGp: Boolean(totalPower || characterGP || shipGP),
+      characterRoster: true,
+      shipRoster: true,
+      equippedMods: true,
+      purchasedAbilities: true,
+      profileStats: Array.isArray(rawPlayer.profileStat),
+      unlockedCosmetics: Array.isArray(rawPlayer.unlockedPlayerTitle) || Array.isArray(rawPlayer.unlockedPlayerPortrait),
+      seasonStatus: Array.isArray(rawPlayer.seasonStatus),
+      datacrons: datacronCount !== null,
+      sixDotMods: sixDotMods !== null,
+      competitiveProfile: Object.keys(competitive).length > 0,
+      abilityProgression: true,
+      materials: false,
+      currencyBalances: false,
+      unequippedGear: false,
+      unequippedMods: false,
     };
 
     const body = {
       player: profile,
       units: characters,
       ships,
-      ...(Object.keys(summary).length ? { summary } : {}),
-      ...(Object.keys(competitive).length ? { competitive } : {}),
+      summary,
+      competitive,
+      capabilities,
+      profileStats: publicSummary.profileStats,
+      purchasedAbilities: publicSummary.purchasedAbilities,
+      seasonStatus: publicSummary.seasonStatus,
+      ...(publicSummary.selectedCosmetics ? { selectedCosmetics: publicSummary.selectedCosmetics } : {}),
       source: "live",
       fetchedAt: profile.updatedAt,
       diagnostics: {
