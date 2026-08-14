@@ -80,6 +80,27 @@ function mergeRoster(rawRoster, calculatedRoster) {
   return merged;
 }
 
+function preserveRawPlayerTotals(merged, rawPlayer) {
+  // Comlink is the authority for account totals. swgoh-stats is used to enrich
+  // per-unit stats and may produce partial/derived GP when its game-data cache is
+  // behind. Never allow those derived totals to replace live profile totals.
+  for (const key of [
+    "galacticPower",
+    "gp",
+    "gpFull",
+    "characterGalacticPower",
+    "characterGp",
+    "gpChar",
+    "shipGalacticPower",
+    "shipGp",
+    "gpShip",
+  ]) {
+    const value = Number(rawPlayer?.[key]);
+    if (Number.isFinite(value) && value > 0) merged[key] = rawPlayer[key];
+  }
+  return merged;
+}
+
 function mergePlayer(rawPlayer, calculatedPlayer) {
   if (!isRecord(rawPlayer)) return calculatedPlayer;
   if (!isRecord(calculatedPlayer)) return rawPlayer;
@@ -87,7 +108,7 @@ function mergePlayer(rawPlayer, calculatedPlayer) {
   const rawRoster = rosterOf(rawPlayer);
   const calculatedRoster = rosterOf(calculatedPlayer);
   const mergedRoster = rawRoster.length ? mergeRoster(rawRoster, calculatedRoster) : calculatedRoster;
-  const merged = { ...rawPlayer, ...calculatedPlayer };
+  const merged = preserveRawPlayerTotals({ ...rawPlayer, ...calculatedPlayer }, rawPlayer);
 
   // server.js checks rosterUnit before legacy aliases. Force the complete merged
   // roster there so a partial stats response can never shrink the player roster.
@@ -188,5 +209,6 @@ module.exports = {
   mergeRoster,
   mergeStatsPayload,
   mergeUnit,
+  preserveRawPlayerTotals,
   rosterOf,
 };
