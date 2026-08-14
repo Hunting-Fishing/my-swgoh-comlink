@@ -1,5 +1,13 @@
 "use strict";
 
+const GAC_DIVISIONS = new Map([
+  [5, 5],
+  [10, 4],
+  [15, 3],
+  [20, 2],
+  [25, 1],
+]);
+
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -15,12 +23,26 @@ function firstText(...values) {
   return "";
 }
 
+function firstScalar(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return "";
+}
+
 function finiteNumber(...values) {
   for (const value of values) {
     const number = Number(value);
     if (Number.isFinite(number)) return number;
   }
   return 0;
+}
+
+function displayDivision(value) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && GAC_DIVISIONS.has(numeric)) return GAC_DIVISIONS.get(numeric);
+  return value ?? "";
 }
 
 function rosterOf(player) {
@@ -69,6 +91,13 @@ function ratingRecord(player) {
 function gacRating(player) {
   const rating = ratingRecord(player);
   const skill = isRecord(rating.playerSkillRating) ? rating.playerSkillRating : {};
+  const rawDivision = firstScalar(
+    rating.division,
+    rating.divisionId,
+    skill.division,
+    skill.divisionId,
+    player?.gacDivision
+  );
   return {
     skillRating: finiteNumber(
       skill.skillRating,
@@ -76,26 +105,15 @@ function gacRating(player) {
       player?.playerSkillRating?.skillRating,
       player?.gacSkillRating
     ),
-    league: firstText(
+    league: firstScalar(
       rating.league,
       rating.leagueId,
       skill.league,
       skill.leagueId,
       player?.gacLeague
     ),
-    division: firstText(
-      rating.division,
-      rating.divisionId,
-      skill.division,
-      skill.divisionId,
-      player?.gacDivision
-    ) || finiteNumber(
-      rating.division,
-      rating.divisionId,
-      skill.division,
-      skill.divisionId,
-      player?.gacDivision
-    ),
+    division: displayDivision(rawDivision),
+    ...(rawDivision !== "" ? { divisionId: rawDivision } : {}),
   };
 }
 
@@ -122,16 +140,20 @@ function normalizeProfileStats(player) {
 function normalizeSeasonStatus(player) {
   const statuses = asArray(player?.seasonStatus)
     .filter(isRecord)
-    .map((status) => ({
-      seasonId: firstText(status.seasonId),
-      eventInstanceId: firstText(status.eventInstanceId),
-      league: status.league ?? "",
-      division: status.division ?? "",
-      seasonPoints: finiteNumber(status.seasonPoints),
-      rank: finiteNumber(status.rank),
-      joinTime: String(status.joinTime ?? ""),
-      endTime: String(status.endTime ?? ""),
-    }));
+    .map((status) => {
+      const rawDivision = status.division ?? "";
+      return {
+        seasonId: firstText(status.seasonId),
+        eventInstanceId: firstText(status.eventInstanceId),
+        league: firstScalar(status.league),
+        division: displayDivision(rawDivision),
+        ...(rawDivision !== "" ? { divisionId: rawDivision } : {}),
+        seasonPoints: finiteNumber(status.seasonPoints),
+        rank: finiteNumber(status.rank),
+        joinTime: String(status.joinTime ?? ""),
+        endTime: String(status.endTime ?? ""),
+      };
+    });
 
   return statuses.sort((left, right) => {
     const leftTime = Number(left.joinTime || left.endTime || 0);
@@ -154,9 +176,12 @@ function publicPlayerSummary(player) {
   const purchased = purchasedAbilities(player);
   const profileStats = normalizeProfileStats(player);
   const seasons = normalizeSeasonStatus(player);
+  const latestSeason = seasons[0] || {};
   const cosmetics = selectedCosmetics(player);
   const unlockedTitles = preferredArray(player, ["unlockedPlayerTitle", "unlockedTitles"]);
   const unlockedPortraits = preferredArray(player, ["unlockedPlayerPortrait", "unlockedPortraits"]);
+  const league = rating.league !== "" ? rating.league : latestSeason.league ?? "";
+  const division = rating.division !== "" ? rating.division : latestSeason.division ?? "";
 
   return {
     summary: {
@@ -167,8 +192,8 @@ function publicPlayerSummary(player) {
     },
     competitive: {
       ...(rating.skillRating ? { gacSkillRating: rating.skillRating } : {}),
-      ...(rating.league !== "" ? { gacLeague: rating.league } : {}),
-      ...(rating.division !== "" && rating.division !== 0 ? { gacDivision: rating.division } : {}),
+      ...(league !== "" ? { gacLeague: league } : {}),
+      ...(division !== "" && division !== 0 ? { gacDivision: division } : {}),
     },
     profileStats,
     purchasedAbilities: purchased,
@@ -178,6 +203,8 @@ function publicPlayerSummary(player) {
 }
 
 module.exports = {
+  GAC_DIVISIONS,
+  displayDivision,
   equippedModCount,
   gacRating,
   normalizeProfileStats,
