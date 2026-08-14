@@ -83,3 +83,31 @@ test("production Stats requests always include calcGP", async () => {
   await productionFetch("http://stats.internal:3223/api?flags=foo", { method: "POST", body: "[]" });
   assert.equal(new Set(seen.split(",")).has("calcGP"), true);
 });
+
+test("production artwork uses static image fallback when AE2 misses an asset", async () => {
+  const seen = [];
+  const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
+  const fetchFixture = async (input) => {
+    const url = new URL(String(input));
+    seen.push(url.href);
+    if (url.hostname === "ae2.internal") return new Response("missing", { status: 404 });
+    if (url.hostname === "assets.example" && url.pathname.endsWith("/tex.charui_scythe.png")) {
+      return new Response(png, { status: 200, headers: { "Content-Type": "image/png" } });
+    }
+    return new Response("missing", { status: 404 });
+  };
+
+  const productionFetch = createProductionFetch({
+    comlinkUrl: "http://comlink.internal:3000",
+    statsUrl: "http://stats.internal:3223",
+    assetUrl: "http://ae2.internal:8080",
+  }, fetchFixture, {
+    SWGOH_ASSET_FALLBACK_BASE_URL: "https://assets.example/static/img/assets",
+  });
+
+  const response = await productionFetch("http://ae2.internal:8080/Asset/single?version=123&assetName=tex.charui_scythe", { method: "GET" });
+  assert.equal(response.status, 200);
+  assert.equal(Buffer.from(await response.arrayBuffer()).subarray(0, 8).equals(png.subarray(0, 8)), true);
+  assert.ok(seen.some((url) => url.includes("ae2.internal") && url.includes("assetName=charui_scythe")));
+  assert.ok(seen.some((url) => url.includes("assets.example") && url.includes("tex.charui_scythe.png")));
+});
