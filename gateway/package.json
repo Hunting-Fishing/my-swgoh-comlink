@@ -3,9 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "description": "A secure live-only bridge between SWGOH Roster Command and Railway-hosted Comlink, Stats, and AE2 services.",
-  "main": "production.js",
+  "main": "recovery.js",
   "scripts": {
-    "start": "node production.js",
+    "start": "node recovery.js",
     "test": "node --test"
   },
   "dependencies": {
