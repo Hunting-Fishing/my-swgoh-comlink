@@ -39,6 +39,46 @@ test("preserves the full Comlink roster and authoritative GP when stats returns 
   assert.equal(merged.rosterUnit[2].definitionId, "MILLENNIUMFALCON:SEVEN_STAR");
 });
 
+test("raw Comlink ownership fields beat empty or stale Stats ownership fields", () => {
+  const rawRoster = [{
+    definitionId: "C3POLEGENDARY:SEVEN_STAR",
+    currentRarity: 7,
+    currentLevel: 85,
+    currentTier: 13,
+    relic: { currentTier: 8 },
+    skill: [
+      { id: "basicskill_C3POLEGENDARY", tier: 6 },
+      { id: "uniqueskill_C3POLEGENDARY01", tier: 7 },
+    ],
+    equippedStatMod: [{ id: "mod1" }],
+    purchasedAbilityId: ["specialability_c3po"],
+  }];
+  const calculatedRoster = [{
+    definitionId: "C3POLEGENDARY:SEVEN_STAR",
+    currentRarity: 1,
+    currentLevel: 1,
+    currentTier: 1,
+    relic: {},
+    skill: [],
+    equippedStatMod: [],
+    purchasedAbilityId: [],
+    gp: 32000,
+    stats: { Speed: 281 },
+  }];
+
+  const merged = mergeRoster(rawRoster, calculatedRoster)[0];
+  assert.equal(merged.gp, 32000);
+  assert.equal(merged.stats.Speed, 281);
+  assert.equal(merged.currentRarity, 7);
+  assert.equal(merged.currentLevel, 85);
+  assert.equal(merged.currentTier, 13);
+  assert.deepEqual(merged.relic, { currentTier: 8 });
+  assert.equal(merged.skill.length, 2);
+  assert.equal(merged.skill[0].tier, 6);
+  assert.equal(merged.equippedStatMod.length, 1);
+  assert.deepEqual(merged.purchasedAbilityId, ["specialability_c3po"]);
+});
+
 test("keeps calculated-only units without duplicating roster matches", () => {
   const rawRoster = [
     { definitionId: "VADER:SEVEN_STAR" },
