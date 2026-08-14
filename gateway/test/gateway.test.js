@@ -30,7 +30,29 @@ test("serves only authenticated, calculated live roster data", async (t) => {
       { tab: 1, rank: 123 },
       { tab: 2, rank: 45 },
     ],
-    playerRating: { playerSkillRating: { skillRating: 3612 } },
+    playerRating: {
+      playerSkillRating: { skillRating: 3612 },
+      league: "KYBER",
+      division: 2,
+    },
+    profileStat: [
+      { id: "STAT_GP", value: "10000000" },
+      { id: "STAT_WINS", value: "222" },
+    ],
+    unlockedPlayerTitle: [{ id: "title-1" }, { id: "title-2" }],
+    unlockedPlayerPortrait: [{ id: "portrait-1" }],
+    selectedPlayerTitle: { id: "title-2" },
+    selectedPlayerPortrait: { id: "portrait-1" },
+    seasonStatus: [{
+      seasonId: "season-current",
+      eventInstanceId: "event-current",
+      league: "KYBER",
+      division: 2,
+      seasonPoints: 950,
+      rank: 17,
+      joinTime: "3000",
+      endTime: "4000",
+    }],
     datacron: [{ id: "dc-1" }, { id: "dc-2" }],
     rosterUnit: [{
       id: "owned-unit-1",
@@ -42,6 +64,7 @@ test("serves only authenticated, calculated live roster data", async (t) => {
       gp: 35000,
       skill: [{ id: "skill_vader_basic", tier: 3 }],
       equippedStatMod: [{ definitionId: "statmod_6dot" }],
+      purchasedAbilityId: ["ultimateability_vader_test"],
     }, {
       id: "owned-ship-1",
       definitionId: "TESTSHIP:SEVEN_STAR",
@@ -97,7 +120,9 @@ test("serves only authenticated, calculated live roster data", async (t) => {
         }],
         recipe: [{
           id: "skillrecipe_vader_omega",
-          materialReference: [{ id: "abilitymaterial_omega", quantity: 3 }],
+          ingredientBundle: {
+            entries: [{ materialReference: { id: "ability_mat_Omega" }, quantity: 3 }],
+          },
         }],
         skill: [{
           id: "skill_vader_basic",
@@ -155,17 +180,35 @@ test("serves only authenticated, calculated live roster data", async (t) => {
   assert.equal(body.units[0].power, 35000);
   assert.equal(body.units[0].alignment, "Dark");
   assert.equal(body.units[0].source, "Comlink + SWGOH Stats");
+  assert.equal(body.units[0].equippedMods, 1);
+  assert.deepEqual(body.units[0].purchasedAbilityIds, ["ultimateability_vader_test"]);
   assert.equal(body.units[0].omegas, 1);
   assert.equal(body.units[0].zetas, 1);
   assert.equal(body.units[0].omicrons, 1);
   assert.equal(body.summary.datacrons, 2);
   assert.equal(body.summary.sixDotMods, 1);
+  assert.equal(body.summary.equippedMods, 1);
+  assert.equal(body.summary.purchasedAbilities, 1);
+  assert.equal(body.summary.unlockedTitles, 2);
+  assert.equal(body.summary.unlockedPortraits, 1);
   assert.equal(body.competitive.arenaRank, 123);
   assert.equal(body.competitive.fleetArenaRank, 45);
   assert.equal(body.competitive.gacSkillRating, 3612);
+  assert.equal(body.competitive.gacLeague, "KYBER");
+  assert.equal(body.competitive.gacDivision, 2);
   assert.equal(body.player.arenaRank, 123);
   assert.equal(body.player.fleetArenaRank, 45);
   assert.equal(body.player.gacSkillRating, 3612);
+  assert.equal(body.player.gacLeague, "KYBER");
+  assert.equal(body.player.gacDivision, 2);
+  assert.equal(body.profileStats.length, 2);
+  assert.equal(body.purchasedAbilities[0].abilityId, "ultimateability_vader_test");
+  assert.equal(body.seasonStatus[0].seasonId, "season-current");
+  assert.deepEqual(body.selectedCosmetics, { titleId: "title-2", portraitId: "portrait-1" });
+  assert.equal(body.capabilities.equippedMods, true);
+  assert.equal(body.capabilities.profileStats, true);
+  assert.equal(body.capabilities.materials, false);
+  assert.equal(body.capabilities.currencyBalances, false);
   assert.equal(body.diagnostics.characters, 1);
   assert.equal(body.diagnostics.ships, 1);
 
