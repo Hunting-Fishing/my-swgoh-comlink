@@ -117,6 +117,95 @@ function ensureFlag(url, flag) {
   return url;
 }
 
+function normalizeMaterialId(value) {
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function recipeIngredientIds(recipe) {
+  if (!isRecord(recipe)) return [];
+  const ingredients = []
+    .concat(Array.isArray(recipe.ingredients) ? recipe.ingredients : [])
+    .concat(Array.isArray(recipe.ingredient) ? recipe.ingredient : [])
+    .concat(Array.isArray(recipe.materialReference) ? recipe.materialReference : [])
+    .concat(Array.isArray(recipe.materials) ? recipe.materials : []);
+
+  return ingredients.map((entry) => {
+    if (typeof entry === "string") return entry;
+    if (!isRecord(entry)) return "";
+    return entry.id || entry.materialId || entry.itemId || entry.definitionId || "";
+  }).filter(Boolean);
+}
+
+function upgradeKindsForRecipe(recipe) {
+  const kinds = new Set();
+  const tokens = recipeIngredientIds(recipe).map(normalizeMaterialId);
+
+  for (const token of tokens) {
+    if (token === "abilitymatomega" || token === "abilitymaterialomega" || token.endsWith("abilitymatomega")) kinds.add("omega");
+    if (token === "abilitymatzeta" || token === "abilitymaterialzeta" || token.endsWith("abilitymatzeta")) kinds.add("zeta");
+    if (token === "abilitymatomicron" || token === "abilitymaterialomicron" || token.endsWith("abilitymatomicron")) kinds.add("omicron");
+  }
+
+  return kinds;
+}
+
+function recipeIdOf(value) {
+  if (!isRecord(value)) return "";
+  return String(value.id || value.recipeId || value.baseId || "").trim();
+}
+
+function prepareRecipes(recipes) {
+  const recipeKinds = new Map();
+  const prepared = recipes.map((recipe) => {
+    if (!isRecord(recipe)) return recipe;
+    const kinds = upgradeKindsForRecipe(recipe);
+    const id = recipeIdOf(recipe);
+    if (id) recipeKinds.set(id, kinds);
+    if (!kinds.size) return recipe;
+    // server.js supports explicit tier flags first and also scans recipe JSON as a
+    // compatibility fallback. Expose normalized words so current and legacy CG
+    // material IDs (for example ability_mat_Omega) are both recognized.
+    return { ...recipe, gatewayUpgradeMaterials: [...kinds] };
+  });
+  return { prepared, recipeKinds };
+}
+
+function tierRecipeId(tier) {
+  if (!isRecord(tier)) return "";
+  if (typeof tier.recipeId === "string") return tier.recipeId;
+  if (typeof tier.recipeReference === "string") return tier.recipeReference;
+  if (isRecord(tier.recipe)) return String(tier.recipe.id || tier.recipe.recipeId || "");
+  return "";
+}
+
+function prepareSkillForRosterSemantics(skill, recipeKinds) {
+  if (!isRecord(skill)) return skill;
+
+  // CG player skill.tier is offset from the in-game display tier. server.js
+  // historically treated the first gamedata tier as already owned when the raw
+  // player tier was zero. A leading null preserves the server contract while
+  // making owned raw tier N activate exactly N gamedata upgrade tiers.
+  const sourceTiers = [skill.tier, skill.tierList, skill.tiers].find((value) => Array.isArray(value) && value.length) || [];
+  const classified = sourceTiers.map((tier) => {
+    if (!isRecord(tier)) return tier;
+    const kinds = recipeKinds.get(tierRecipeId(tier)) || new Set();
+    return {
+      ...tier,
+      ...(kinds.has("omega") ? { isOmegaTier: true } : {}),
+      ...(kinds.has("zeta") ? { isZetaTier: true } : {}),
+      ...(kinds.has("omicron") ? { isOmicronTier: true } : {}),
+    };
+  });
+
+  if (!classified.length) return skill;
+  return {
+    ...skill,
+    tier: [null, ...classified],
+    tierList: [],
+    tiers: [],
+  };
+}
+
 function normalizeAe2AssetName(value) {
   return String(value || "")
     .trim()
@@ -200,10 +289,12 @@ function createStaticGameDataLoader(fetchImpl = globalThis.fetch, env = process.
       ]);
 
       const units = collectionArray(unitsPayload);
-      const skills = collectionArray(skillsPayload);
-      const recipes = collectionArray(recipesPayload);
+      const rawSkills = collectionArray(skillsPayload);
+      const rawRecipes = collectionArray(recipesPayload);
       const statMods = collectionArray(statModsPayload);
       const strings = localizationMap(localizationPayload);
+      const { prepared: recipes, recipeKinds } = prepareRecipes(rawRecipes);
+      const skills = rawSkills.map((skill) => prepareSkillForRosterSemantics(skill, recipeKinds));
 
       if (!units.length) throw new Error("GitHub gamedata units_gas.json contained no player-obtainable units");
       if (!skills.length) throw new Error("GitHub gamedata skill.json contained no skills");
@@ -330,5 +421,10 @@ module.exports = {
   localizationMap,
   normalizeAe2AssetName,
   normalizeGameData,
+  normalizeMaterialId,
+  prepareRecipes,
+  prepareSkillForRosterSemantics,
+  recipeIngredientIds,
   sameService,
+  upgradeKindsForRecipe,
 };
