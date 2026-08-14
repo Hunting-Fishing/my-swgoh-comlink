@@ -52,8 +52,19 @@ test("serves only authenticated, calculated live roster data", async (t) => {
     }],
   };
 
+  let requestedAssetName = "";
   const fetchFixture = async (url, options) => {
     const parsed = new URL(url);
+    if (parsed.hostname === "raw.githubusercontent.com" && parsed.pathname.endsWith("/statMod.json")) {
+      return jsonResponse({ version: "test", data: [{ id: "statmod_6dot", rarity: 6 }] });
+    }
+    if (parsed.pathname === "/Asset/single") {
+      requestedAssetName = parsed.searchParams.get("assetName") || "";
+      return new Response(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]), {
+        status: 200,
+        headers: { "Content-Type": "application/octet-stream" },
+      });
+    }
     if (parsed.pathname === "/player") return jsonResponse([player]);
     if (parsed.pathname === "/api") {
       const calculated = JSON.parse(options.body);
@@ -84,15 +95,15 @@ test("serves only authenticated, calculated live roster data", async (t) => {
           thumbnailName: "tex.charui_testship",
           categoryIdList: ["alignment_light"],
         }],
-        statMod: [{
-          id: "statmod_6dot",
-          rarity: 6,
+        recipe: [{
+          id: "skillrecipe_vader_omega",
+          materialReference: [{ id: "abilitymaterial_omega", quantity: 3 }],
         }],
         skill: [{
           id: "skill_vader_basic",
           nameKey: "SKILL_VADER_BASIC_NAME",
           descKey: "SKILL_VADER_BASIC_DESC",
-          tierList: [{}, { isOmegaTier: true }, { isZetaTier: true }, { isOmicronTier: true }],
+          tierList: [{}, { recipeId: "skillrecipe_vader_omega" }, { isZetaTier: true }, { isOmicronTier: true }],
         }],
       });
     }
@@ -139,7 +150,7 @@ test("serves only authenticated, calculated live roster data", async (t) => {
   assert.equal(body.ships.length, 1);
   assert.equal(body.units[0].name, "Darth Vader");
   assert.equal(body.ships[0].name, "Test Ship");
-  assert.equal(body.ships[0].image, "https://gateway.example/v1/assets/TESTSHIP");
+  assert.equal(body.ships[0].image, "https://gateway.example/v1/assets/charui_testship");
   assert.equal(body.units[0].speed, 271);
   assert.equal(body.units[0].power, 35000);
   assert.equal(body.units[0].alignment, "Dark");
@@ -157,4 +168,9 @@ test("serves only authenticated, calculated live roster data", async (t) => {
   assert.equal(body.player.gacSkillRating, 3612);
   assert.equal(body.diagnostics.characters, 1);
   assert.equal(body.diagnostics.ships, 1);
+
+  const imageResponse = await fetch(`${base}/v1/assets/charui_testship`);
+  assert.equal(imageResponse.status, 200);
+  assert.equal(imageResponse.headers.get("content-type"), "image/png");
+  assert.equal(requestedAssetName, "charui_testship");
 });

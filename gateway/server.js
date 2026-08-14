@@ -308,6 +308,49 @@ function makeStatModMap(statMods) {
   return map;
 }
 
+function makeRecipeMap(recipes) {
+  const map = new Map();
+  for (const recipe of recipes) {
+    if (!isRecord(recipe)) continue;
+    const id = firstText(recipe.id, recipe.recipeId, recipe.baseId);
+    if (id && !map.has(id)) map.set(id, recipe);
+  }
+  return map;
+}
+
+const STATMOD_FALLBACK_URL = "https://raw.githubusercontent.com/swgoh-utils/gamedata/main/statMod.json";
+
+async function fallbackStatMods(fetchImpl) {
+  try {
+    const response = await fetchImpl(STATMOD_FALLBACK_URL, {
+      headers: { Accept: "application/json", "User-Agent": "swgoh-live-gateway" },
+      redirect: "error",
+    });
+    if (!response.ok) return [];
+    const payload = await response.json();
+    if (Array.isArray(payload)) return payload;
+    if (Array.isArray(payload?.data)) return payload.data;
+    if (Array.isArray(payload?.statMod)) return payload.statMod;
+    if (Array.isArray(payload?.statMods)) return payload.statMods;
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+function assetKeyOf(definition, baseId) {
+  const raw = firstText(
+    definition?.thumbnailName,
+    definition?.thumbnail,
+    definition?.icon,
+    `tex.charui_${String(baseId || "").toLowerCase()}`
+  );
+  return String(raw || "")
+    .trim()
+    .replace(/^tex\./i, "")
+    .replace(/\.(png|jpg|jpeg|webp)$/i, "");
+}
+
 function humanize(value) {
   return String(value || "")
     .replace(/^(unit|skill|ability|category)_/i, "")
@@ -475,24 +518,31 @@ function ownedSkills(unit) {
   return map;
 }
 
-function tierHasUpgrade(tier, kind) {
+function tierHasUpgrade(tier, kind, recipeMap = new Map()) {
   if (!isRecord(tier)) return false;
-  const recipeId = String(tier.recipeId || "").toLowerCase();
-  if (kind === "zeta" && (tier.isZetaTier === true || recipeId === "abilitymaterial_zeta")) return true;
-  if (kind === "omega" && (tier.isOmegaTier === true || recipeId === "abilitymaterial_omega")) return true;
-  if (kind === "omicron" && (tier.isOmicronTier === true || recipeId === "abilitymaterial_omicron")) return true;
-
-  return new RegExp(kind, "i").test([
+  const recipeId = firstText(tier.recipeId, tier.recipe?.id, tier.recipeReference);
+  const recipe = recipeId ? recipeMap.get(recipeId) : null;
+  const searchable = [
     tier.powerAdditiveTag,
     tier.powerOverrideTag,
     tier.name,
     tier.id,
     tier.tierName,
     tier.recipeId,
-  ].filter(Boolean).join(" "));
+    recipe ? JSON.stringify(recipe) : "",
+  ].filter(Boolean).join(" ");
+
+  if (kind === "zeta" && tier.isZetaTier === true) return true;
+  if (kind === "omega" && tier.isOmegaTier === true) return true;
+  if (kind === "omicron" && tier.isOmicronTier === true) return true;
+
+  if (kind === "zeta") return /abilitymaterial[_-]?zeta|\bzeta\b/i.test(searchable);
+  if (kind === "omega") return /abilitymaterial[_-]?omega|\bomega\b/i.test(searchable);
+  if (kind === "omicron") return /abilitymaterial[_-]?omicron|\bomicron\b/i.test(searchable);
+  return false;
 }
 
-function skillInfoOf(unit, definition, skillMap, strings) {
+function skillInfoOf(unit, definition, skillMap, strings, recipeMap = new Map()) {
   const owned = ownedSkills(unit);
   let zetas = 0;
   let omegas = 0;
@@ -510,9 +560,9 @@ function skillInfoOf(unit, definition, skillMap, strings) {
     const tiers = skillTiers(skill);
     const active = tiers.filter((tier, index) => isRecord(tier) && index + 2 <= playerTier);
 
-    zetas += active.filter((tier) => tierHasUpgrade(tier, "zeta")).length;
-    omegas += active.filter((tier) => tierHasUpgrade(tier, "omega")).length;
-    omicrons += active.filter((tier) => tierHasUpgrade(tier, "omicron")).length;
+    zetas += active.filter((tier) => tierHasUpgrade(tier, "zeta", recipeMap)).length;
+    omegas += active.filter((tier) => tierHasUpgrade(tier, "omega", recipeMap)).length;
+    omicrons += active.filter((tier) => tierHasUpgrade(tier, "omicron", recipeMap)).length;
 
     const nameKey = firstText(skill.nameKey, reference.nameKey);
     const descKey = firstText(skill.descKey, skill.descriptionKey, reference.descKey);
@@ -523,9 +573,9 @@ function skillInfoOf(unit, definition, skillMap, strings) {
       note: localized(strings, descKey, skill.description, `Live ability tier ${playerTier}`),
       tier: ownedTier,
       displayTier: playerTier,
-      zeta: active.some((tier) => tierHasUpgrade(tier, "zeta")),
-      omega: active.some((tier) => tierHasUpgrade(tier, "omega")),
-      omicron: active.some((tier) => tierHasUpgrade(tier, "omicron")),
+      zeta: active.some((tier) => tierHasUpgrade(tier, "zeta", recipeMap)),
+      omega: active.some((tier) => tierHasUpgrade(tier, "omega", recipeMap)),
+      omicron: active.some((tier) => tierHasUpgrade(tier, "omicron", recipeMap)),
       ...(firstText(skill.icon, reference.icon) ? { image: firstText(skill.icon, reference.icon) } : {}),
     });
   }
@@ -647,7 +697,9 @@ function createGateway(config = loadConfig(), dependencies = {}) {
       const [dataPayload, localizationPayload] = await Promise.all([dataRequest, localizationRequest]);
       const definitions = findCollection(dataPayload, ["units", "unit", "unitData", "unitList"]);
       const skills = findCollection(dataPayload, ["skill", "skills", "skillData", "skillList"]);
-      const statMods = findCollection(dataPayload, ["statMod", "statMods", "statModData", "statModList"]);
+      const recipes = findCollection(dataPayload, ["recipe", "recipes", "recipeData", "recipeList"]);
+      const statModsFromComlink = findCollection(dataPayload, ["statMod", "statMods", "statModData", "statModList"]);
+      const statMods = statModsFromComlink.length ? statModsFromComlink : await fallbackStatMods(fetchImpl);
       const unitMap = makeDefinitionMap(definitions);
 
       if (!unitMap.size) {
@@ -663,6 +715,7 @@ function createGateway(config = loadConfig(), dependencies = {}) {
       gameContext = {
         units: unitMap,
         skills: makeSkillMap(skills),
+        recipes: makeRecipeMap(recipes),
         statMods: makeStatModMap(statMods),
         strings: parseLocalization(localizationPayload),
         assetVersion: assetVersion == null ? "" : String(assetVersion),
@@ -691,23 +744,18 @@ function createGateway(config = loadConfig(), dependencies = {}) {
       humanize(baseId)
     );
     const factions = factionsOf(definition);
-    const skillInfo = skillInfoOf(rosterUnit, definition, context.skills, context.strings);
+    const skillInfo = skillInfoOf(rosterUnit, definition, context.skills, context.strings, context.recipes);
     const publicOrigin = originFor(request, config);
-    const assetName = firstText(
-      definition.thumbnailName,
-      definition.thumbnail,
-      definition.icon,
-      `tex.charui_${baseId.toLowerCase()}`
-    );
+    const assetName = assetKeyOf(definition, baseId);
 
     let image;
-    if (config.assetUrl && context.assetVersion && publicOrigin) {
-      allowedAssets.set(baseId, {
+    if (config.assetUrl && context.assetVersion && publicOrigin && assetName) {
+      allowedAssets.set(assetName, {
         assetName,
         version: context.assetVersion,
         expiresAt: now() + config.metadataCacheMs,
       });
-      image = `${publicOrigin}/v1/assets/${encodeURIComponent(baseId)}`;
+      image = `${publicOrigin}/v1/assets/${encodeURIComponent(assetName)}`;
     }
 
     return {
