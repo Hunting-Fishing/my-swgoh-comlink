@@ -22,7 +22,7 @@ function collectionArray(value, depth = 0) {
   if (Array.isArray(value)) return value;
   if (!isRecord(value) || depth > 4) return [];
 
-  for (const key of ["data", "items", "values", "unit", "units", "skill", "skills", "list", "entries"]) {
+  for (const key of ["data", "items", "values", "unit", "units", "skill", "skills", "recipe", "recipes", "statMod", "statMods", "list", "entries"]) {
     if (value[key] !== undefined) {
       const nested = collectionArray(value[key], depth + 1);
       if (nested.length) return nested;
@@ -55,9 +55,13 @@ function normalizeGameData(payload) {
   const normalized = { ...payload };
   const units = collectionArray(payload.units ?? payload.unit ?? payload.unitData ?? payload.unitList);
   const skills = collectionArray(payload.skill ?? payload.skills ?? payload.skillData ?? payload.skillList);
+  const recipes = collectionArray(payload.recipe ?? payload.recipes ?? payload.recipeData ?? payload.recipeList);
+  const statMods = collectionArray(payload.statMod ?? payload.statMods ?? payload.statModData ?? payload.statModList);
 
   if (units.length) normalized.units = units;
   if (skills.length) normalized.skill = skills;
+  if (recipes.length) normalized.recipe = recipes;
+  if (statMods.length) normalized.statMod = statMods;
 
   for (const key of ["data", "payload", "gameData", "result", "response"]) {
     if (isRecord(payload[key])) normalized[key] = normalizeGameData(payload[key]);
@@ -139,18 +143,23 @@ function createStaticGameDataLoader(fetchImpl = globalThis.fetch, env = process.
         return cached;
       }
 
-      const [unitsPayload, skillsPayload, localizationPayload] = await Promise.all([
+      const [unitsPayload, skillsPayload, recipesPayload, statModsPayload, localizationPayload] = await Promise.all([
         fetchJson(fetchImpl, `${baseUrl}/units_gas.json`),
         fetchJson(fetchImpl, `${baseUrl}/skill.json`),
+        fetchJson(fetchImpl, `${baseUrl}/recipe.json`),
+        fetchJson(fetchImpl, `${baseUrl}/statMod.json`),
         fetchBrotliJson(fetchImpl, `${baseUrl}/Loc_ENG_US.txt.json.br`),
       ]);
 
       const units = collectionArray(unitsPayload);
       const skills = collectionArray(skillsPayload);
+      const recipes = collectionArray(recipesPayload);
+      const statMods = collectionArray(statModsPayload);
       const strings = localizationMap(localizationPayload);
 
       if (!units.length) throw new Error("GitHub gamedata units_gas.json contained no player-obtainable units");
       if (!skills.length) throw new Error("GitHub gamedata skill.json contained no skills");
+      if (!recipes.length) throw new Error("GitHub gamedata recipe.json contained no recipes");
 
       cached = {
         versionKey,
@@ -159,13 +168,15 @@ function createStaticGameDataLoader(fetchImpl = globalThis.fetch, env = process.
         assetVersion: versions.assetVersion == null ? "" : String(versions.assetVersion),
         units,
         skills,
+        recipes,
+        statMods,
         strings,
         loadedAt: new Date(now).toISOString(),
         expiresAt: now + cacheMs,
       };
 
       console.log(
-        `[gateway] GitHub gamedata ready version=${cached.gameVersion} units=${units.length} skills=${skills.length} strings=${Object.keys(strings).length} assetVersion=${cached.assetVersion}`
+        `[gateway] GitHub gamedata ready version=${cached.gameVersion} units=${units.length} skills=${skills.length} recipes=${recipes.length} statMods=${statMods.length} strings=${Object.keys(strings).length} assetVersion=${cached.assetVersion}`
       );
       return cached;
     })().finally(() => {
@@ -215,6 +226,8 @@ function createProductionFetch(config, fetchImpl = globalThis.fetch, env = proce
           return jsonResponse({
             units: gameData.units,
             skill: gameData.skills,
+            recipe: gameData.recipes,
+            statMod: gameData.statMods,
             version: gameData.gameVersion,
             source: "github-gamedata",
           });
@@ -238,7 +251,8 @@ function createProductionFetch(config, fetchImpl = globalThis.fetch, env = proce
       const normalized = normalizeGameData(payload);
       const unitCount = Array.isArray(normalized?.units) ? normalized.units.length : 0;
       const skillCount = Array.isArray(normalized?.skill) ? normalized.skill.length : 0;
-      console.log(`[gateway] normalized fallback Comlink /data collections (units=${unitCount}, skills=${skillCount})`);
+      const recipeCount = Array.isArray(normalized?.recipe) ? normalized.recipe.length : 0;
+      console.log(`[gateway] normalized fallback Comlink /data collections (units=${unitCount}, skills=${skillCount}, recipes=${recipeCount})`);
       return jsonResponse(normalized);
     } catch (error) {
       console.warn(`[gateway] could not normalize fallback Comlink /data response: ${error?.message || error}`);
