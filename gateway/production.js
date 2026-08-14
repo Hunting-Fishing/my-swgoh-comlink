@@ -138,13 +138,20 @@ function recipeIngredientIds(recipe) {
 
 function upgradeKindsForRecipe(recipe) {
   const kinds = new Set();
-  const tokens = recipeIngredientIds(recipe).map(normalizeMaterialId);
+  if (!isRecord(recipe)) return kinds;
 
-  for (const token of tokens) {
-    if (token === "abilitymatomega" || token === "abilitymaterialomega" || token.endsWith("abilitymatomega")) kinds.add("omega");
-    if (token === "abilitymatzeta" || token === "abilitymaterialzeta" || token.endsWith("abilitymatzeta")) kinds.add("zeta");
-    if (token === "abilitymatomicron" || token === "abilitymaterialomicron" || token.endsWith("abilitymatomicron")) kinds.add("omicron");
-  }
+  // Recipe shapes have changed over time. Scan the complete normalized recipe so
+  // nested material references are detected regardless of the current field name.
+  const compact = normalizeMaterialId(JSON.stringify(recipe));
+  if (compact.includes("abilitymatomega") || compact.includes("abilitymaterialomega")) kinds.add("omega");
+  if (compact.includes("abilitymatzeta") || compact.includes("abilitymaterialzeta")) kinds.add("zeta");
+  if (compact.includes("abilitymatomicron") || compact.includes("abilitymaterialomicron")) kinds.add("omicron");
+
+  // Current recipe IDs also explicitly identify the exceptional Zeta/Omicron
+  // variants. Keep this as a deterministic fallback if material nesting changes.
+  const recipeId = String(recipe.id || recipe.recipeId || recipe.baseId || "").toUpperCase();
+  if (/(?:^|_)ZETA(?:_|$)/.test(recipeId)) kinds.add("zeta");
+  if (/(?:^|_)OMICRON(?:_|$)/.test(recipeId)) kinds.add("omicron");
 
   return kinds;
 }
@@ -164,7 +171,7 @@ function prepareRecipes(recipes) {
     if (!kinds.size) return recipe;
     // server.js supports explicit tier flags first and also scans recipe JSON as a
     // compatibility fallback. Expose normalized words so current and legacy CG
-    // material IDs (for example ability_mat_Omega) are both recognized.
+    // material IDs are both recognized.
     return { ...recipe, gatewayUpgradeMaterials: [...kinds] };
   });
   return { prepared, recipeKinds };
@@ -181,10 +188,9 @@ function tierRecipeId(tier) {
 function prepareSkillForRosterSemantics(skill, recipeKinds) {
   if (!isRecord(skill)) return skill;
 
-  // CG player skill.tier is offset from the in-game display tier. server.js
-  // historically treated the first gamedata tier as already owned when the raw
-  // player tier was zero. A leading null preserves the server contract while
-  // making owned raw tier N activate exactly N gamedata upgrade tiers.
+  // Raw Comlink player skill.tier is two below the displayed ability level.
+  // server.js already compensates with ownedTier + 2. Therefore the gamedata
+  // tier array must remain unshifted: index 0 is displayed ability tier 2.
   const sourceTiers = [skill.tier, skill.tierList, skill.tiers].find((value) => Array.isArray(value) && value.length) || [];
   const classified = sourceTiers.map((tier) => {
     if (!isRecord(tier)) return tier;
@@ -200,7 +206,7 @@ function prepareSkillForRosterSemantics(skill, recipeKinds) {
   if (!classified.length) return skill;
   return {
     ...skill,
-    tier: [null, ...classified],
+    tier: classified,
     tierList: [],
     tiers: [],
   };
@@ -295,6 +301,12 @@ function createStaticGameDataLoader(fetchImpl = globalThis.fetch, env = process.
       const strings = localizationMap(localizationPayload);
       const { prepared: recipes, recipeKinds } = prepareRecipes(rawRecipes);
       const skills = rawSkills.map((skill) => prepareSkillForRosterSemantics(skill, recipeKinds));
+      const upgradeRecipeCounts = { omega: 0, zeta: 0, omicron: 0 };
+      for (const kinds of recipeKinds.values()) {
+        for (const kind of kinds) {
+          if (Object.prototype.hasOwnProperty.call(upgradeRecipeCounts, kind)) upgradeRecipeCounts[kind] += 1;
+        }
+      }
 
       if (!units.length) throw new Error("GitHub gamedata units_gas.json contained no player-obtainable units");
       if (!skills.length) throw new Error("GitHub gamedata skill.json contained no skills");
@@ -315,7 +327,9 @@ function createStaticGameDataLoader(fetchImpl = globalThis.fetch, env = process.
       };
 
       console.log(
-        `[gateway] GitHub gamedata ready version=${cached.gameVersion} units=${units.length} skills=${skills.length} recipes=${recipes.length} statMods=${statMods.length} strings=${Object.keys(strings).length} assetVersion=${cached.assetVersion}`
+        `[gateway] GitHub gamedata ready version=${cached.gameVersion} units=${units.length} skills=${skills.length} recipes=${recipes.length} ` +
+        `upgradeRecipes=omega:${upgradeRecipeCounts.omega}/zeta:${upgradeRecipeCounts.zeta}/omicron:${upgradeRecipeCounts.omicron} ` +
+        `statMods=${statMods.length} strings=${Object.keys(strings).length} assetVersion=${cached.assetVersion}`
       );
       return cached;
     })().finally(() => {
