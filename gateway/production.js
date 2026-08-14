@@ -7,6 +7,7 @@ const { createLocalizationAwareFetch } = require("./bootstrap");
 
 const decompressBrotli = promisify(brotliDecompress);
 const DEFAULT_GAMEDATA_BASE_URL = "https://raw.githubusercontent.com/swgoh-utils/gamedata/main";
+const DEFAULT_ASSET_FALLBACK_BASE_URL = "https://swgoh.gg/static/img/assets";
 const DEFAULT_STATIC_CACHE_MS = 6 * 60 * 60 * 1000;
 
 function isRecord(value) {
@@ -120,7 +121,54 @@ function normalizeAe2AssetName(value) {
   return String(value || "")
     .trim()
     .replace(/^tex\./i, "")
-    .replace(/\.png$/i, "");
+    .replace(/\.(png|jpg|jpeg|webp)$/i, "");
+}
+
+function assetFallbackCandidates(rawName, env = process.env) {
+  const baseUrl = String(env.SWGOH_ASSET_FALLBACK_BASE_URL || DEFAULT_ASSET_FALLBACK_BASE_URL).replace(/\/+$/, "");
+  const raw = String(rawName || "").trim().replace(/\.(png|jpg|jpeg|webp)$/i, "");
+  const normalized = normalizeAe2AssetName(raw);
+  const names = [];
+  if (raw) names.push(raw);
+  if (normalized) {
+    names.push(`tex.${normalized}`);
+    names.push(normalized);
+  }
+  return [...new Set(names)]
+    .filter(Boolean)
+    .map((name) => `${baseUrl}/${encodeURIComponent(name)}.png`);
+}
+
+async function fetchAe2AssetWithFallback(fetchImpl, ae2Url, options = {}, rawName = "", env = process.env) {
+  let ae2Response = null;
+  try {
+    ae2Response = await fetchImpl(ae2Url, options);
+    if (ae2Response.ok) return ae2Response;
+  } catch (error) {
+    console.warn(`[gateway] AE2 asset request failed for ${normalizeAe2AssetName(rawName) || "unknown"}: ${error?.message || error}`);
+  }
+
+  for (const candidate of assetFallbackCandidates(rawName, env)) {
+    try {
+      const fallback = await fetchImpl(candidate, {
+        headers: {
+          Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+          "User-Agent": "swgoh-live-gateway",
+        },
+        redirect: "follow",
+        signal: options.signal,
+      });
+      if (fallback.ok) {
+        console.log(`[gateway] artwork fallback served ${normalizeAe2AssetName(rawName)} from ${new URL(candidate).hostname}`);
+        return fallback;
+      }
+    } catch {
+      // Try the next deterministic image candidate.
+    }
+  }
+
+  if (ae2Response) return ae2Response;
+  return new Response("Asset unavailable", { status: 502 });
 }
 
 function createStaticGameDataLoader(fetchImpl = globalThis.fetch, env = process.env) {
@@ -204,11 +252,12 @@ function createProductionFetch(config, fetchImpl = globalThis.fetch, env = proce
 
     // AE2 expects bundle names such as "charui_darthvader", while CG game data
     // exposes thumbnailName as "tex.charui_darthvader". Strip the texture prefix.
+    // If AE2 cannot return a specific asset, proxy a deterministic static artwork fallback.
     if (method === "GET" && url.pathname.toLowerCase() === "/asset/single" && sameService(url, config.assetUrl)) {
-      const rawName = url.searchParams.get("assetName");
+      const rawName = url.searchParams.get("assetName") || "";
       const assetName = normalizeAe2AssetName(rawName);
       if (assetName) url.searchParams.set("assetName", assetName);
-      return fetchImpl(url, options);
+      return fetchAe2AssetWithFallback(fetchImpl, url, options, rawName, env);
     }
 
     if (method === "POST" && ["/metadata", "/data", "/localization"].includes(url.pathname)) {
@@ -272,10 +321,12 @@ function start() {
 if (require.main === module) start();
 
 module.exports = {
+  assetFallbackCandidates,
   collectionArray,
   createProductionFetch,
   createStaticGameDataLoader,
   ensureFlag,
+  fetchAe2AssetWithFallback,
   localizationMap,
   normalizeAe2AssetName,
   normalizeGameData,
