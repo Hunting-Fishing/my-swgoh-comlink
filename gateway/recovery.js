@@ -3,6 +3,7 @@
 const { createGateway, loadConfig } = require("./server");
 const { createProductionFetch, sameService } = require("./production");
 const { createGuildAwareServer } = require("./guild-service");
+const { createModAwareServer } = require("./mod-service");
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -202,7 +203,8 @@ function start() {
   const config = loadConfig();
   const fetchImpl = createRosterPreservingFetch(config);
   const baseGateway = createGateway(config, { fetch: fetchImpl });
-  createGuildAwareServer(baseGateway, config, { fetch: fetchImpl }).listen(config.port, "0.0.0.0", () => {
+  const guildGateway = createGuildAwareServer(baseGateway, config, { fetch: fetchImpl });
+  createModAwareServer(guildGateway, config, { fetch: fetchImpl }).listen(config.port, "0.0.0.0", () => {
     console.log(`SWGOH live gateway recovery runtime listening on port ${config.port}`);
   });
 }
