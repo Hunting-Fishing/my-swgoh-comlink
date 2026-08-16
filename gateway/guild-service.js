@@ -31,6 +31,14 @@ function finiteNumber(...values) {
   return 0;
 }
 
+function cloneJson(value, fallback) {
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return fallback;
+  }
+}
+
 function baseIdOf(unit) {
   return firstText(unit?.definitionId, unit?.defId, unit?.baseId, unit?.baseID, unit?.id).split(":")[0];
 }
@@ -167,6 +175,23 @@ function guildProfile(guild, fallbackId) {
     galacticPower: finiteNumber(profile.guildGalacticPower, profile.guildGalacticPowerForRequirement),
     bannerColorId: firstText(profile.bannerColorId),
     bannerLogoId: firstText(profile.bannerLogoId),
+    externalMessageKey: firstText(profile.externalMessageKey),
+    enrollmentStatus: finiteNumber(profile.enrollmentStatus),
+    level: finiteNumber(profile.level),
+    levelRequirement: finiteNumber(profile.levelRequirement),
+    guildType: firstText(profile.guildType),
+  };
+}
+
+function guildActivity(guild) {
+  const profile = isRecord(guild?.profile) ? guild.profile : {};
+  return {
+    nextChallengesRefresh: firstText(String(guild?.nextChallengesRefresh || guild?.nextChallengeRefresh || "")),
+    raidLaunchConfig: cloneJson(asArray(profile.raidLaunchConfig), []),
+    guildEventTracker: cloneJson(asArray(profile.guildEventTracker), []),
+    recentRaidResult: cloneJson(asArray(guild?.recentRaidResult), []),
+    recentTerritoryWarResult: cloneJson(asArray(guild?.recentTerritoryWarResult), []),
+    territoryBattleResult: cloneJson(asArray(guild?.territoryBattleResult), []),
   };
 }
 
@@ -176,10 +201,17 @@ function guildMemberSummary(member) {
     name: firstText(member?.playerName, member?.name, "Unknown Player"),
     level: finiteNumber(member?.playerLevel, member?.level),
     memberLevel: finiteNumber(member?.memberLevel),
+    guildXp: finiteNumber(member?.guildXp),
     galacticPower: finiteNumber(member?.galacticPower),
+    squadPower: finiteNumber(member?.squadPower),
     lastActivityTime: firstText(String(member?.lastActivityTime || "")),
     guildJoinTime: firstText(String(member?.guildJoinTime || "")),
+    playerTitle: firstText(member?.playerTitle),
+    playerPortrait: firstText(member?.playerPortrait),
+    lifetimeSeasonScore: firstText(String(member?.lifetimeSeasonScore || "")),
     leagueId: firstText(member?.leagueId),
+    memberContribution: cloneJson(asArray(member?.memberContribution), []),
+    seasonStatus: cloneJson(asArray(member?.seasonStatus), []),
   };
 }
 
@@ -220,6 +252,10 @@ function createGuildService(config, dependencies = {}) {
     return value;
   }
 
+  function guildCacheKey(guildId, includeActivity) {
+    return `${guildId}:${includeActivity ? "activity" : "roster"}`;
+  }
+
   async function playerBy(payload) {
     const response = await requestComlink(fetchImpl, config, "/player", payload);
     const player = extractPlayer(response);
@@ -229,20 +265,29 @@ function createGuildService(config, dependencies = {}) {
 
   async function memberByPlayerId(playerId, summary, seedPlayer = null) {
     const cached = fresh(memberCache, playerId);
-    if (cached) return cached;
+    if (cached) {
+      return {
+        ...cached,
+        ...guildMemberSummary(summary),
+        playerId: firstText(cached.playerId, summary?.playerId),
+        name: firstText(cached.name, summary?.playerName, summary?.name),
+      };
+    }
     const rawPlayer = seedPlayer || await playerBy({ playerId });
     return store(memberCache, playerId, compactMember(rawPlayer, summary), memberCacheMs);
   }
 
-  async function hydrateGuild(guildId, seedPlayer) {
-    const cached = fresh(guildCache, guildId);
+  async function hydrateGuild(guildId, seedPlayer, options = {}) {
+    const includeActivity = options.includeActivity === true;
+    const cacheKey = guildCacheKey(guildId, includeActivity);
+    const cached = fresh(guildCache, cacheKey);
     if (cached) return cached;
-    if (pendingGuild.has(guildId)) return pendingGuild.get(guildId);
+    if (pendingGuild.has(cacheKey)) return pendingGuild.get(cacheKey);
 
     const pending = (async () => {
       const guildPayload = await requestComlink(fetchImpl, config, "/guild", {
         guildId,
-        includeRecentGuildActivityInfo: false,
+        includeRecentGuildActivityInfo: includeActivity,
       });
       const guild = extractGuild(guildPayload);
       if (!guild) throw new Error("Comlink /guild did not return guild data.");
@@ -283,22 +328,24 @@ function createGuildService(config, dependencies = {}) {
           complete: failures === 0 && hydrated === sourceMembers.length,
           concurrency: Math.min(concurrency, sourceMembers.length),
         },
+        ...(includeActivity ? { activity: guildActivity(guild) } : {}),
         fetchedAt: new Date(now()).toISOString(),
       };
-      return store(guildCache, guildId, body, guildCacheMs);
-    })().finally(() => pendingGuild.delete(guildId));
+      return store(guildCache, cacheKey, body, guildCacheMs);
+    })().finally(() => pendingGuild.delete(cacheKey));
 
-    pendingGuild.set(guildId, pending);
+    pendingGuild.set(cacheKey, pending);
     return pending;
   }
 
-  async function loadByAllyCode(allyCode) {
+  async function loadByAllyCode(allyCode, options = {}) {
     const normalized = String(allyCode || "").replace(/\D/g, "");
     if (!/^\d{9}$/.test(normalized)) throw new Error("A valid 9-digit Ally Code is required.");
+    const includeActivity = options.includeActivity === true;
 
     const knownGuild = fresh(allyGuild, normalized);
     if (knownGuild) {
-      const cached = fresh(guildCache, knownGuild);
+      const cached = fresh(guildCache, guildCacheKey(knownGuild, includeActivity));
       if (cached) return cached;
     }
 
@@ -306,7 +353,7 @@ function createGuildService(config, dependencies = {}) {
     const guildId = firstText(seedPlayer.guildId, seedPlayer.guild?.id);
     if (!guildId) throw new Error("This player is not currently in a public guild.");
     store(allyGuild, normalized, guildId, guildCacheMs);
-    return hydrateGuild(guildId, seedPlayer);
+    return hydrateGuild(guildId, seedPlayer, { includeActivity });
   }
 
   return { loadByAllyCode };
@@ -346,8 +393,12 @@ function createGuildAwareServer(baseGateway, config, dependencies = {}) {
     }
 
     try {
-      const body = await service.loadByAllyCode(match[1]);
-      writeJson(response, 200, body, { "X-Guild-Source": "comlink-live" });
+      const includeActivity = url.searchParams.get("activity") === "1";
+      const body = await service.loadByAllyCode(match[1], { includeActivity });
+      writeJson(response, 200, body, {
+        "X-Guild-Source": "comlink-live",
+        "X-Guild-Activity": includeActivity ? "included" : "omitted",
+      });
     } catch (error) {
       const message = error?.name === "AbortError" ? "Guild request timed out." : String(error?.message || error);
       console.error(`[gateway:guild] ${error?.stack || error}`);
@@ -363,6 +414,8 @@ module.exports = {
   createGuildService,
   extractGuild,
   extractPlayer,
+  guildActivity,
+  guildMemberSummary,
   mapLimit,
   relicLevel,
   requestComlink,
