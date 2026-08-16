@@ -64,6 +64,21 @@ function extractPlayer(payload) {
   return payload;
 }
 
+function extractPlayers(payload) {
+  if (Array.isArray(payload)) return payload.filter(isRecord);
+  if (!isRecord(payload)) return [];
+  for (const key of ["players", "player", "result", "results"]) {
+    const value = payload[key];
+    if (Array.isArray(value)) return value.filter(isRecord);
+    if (isRecord(value)) return [value];
+  }
+  for (const key of ["payload", "data"]) {
+    const nested = extractPlayers(payload[key]);
+    if (nested.length) return nested;
+  }
+  return [];
+}
+
 function extractGuild(payload) {
   if (!isRecord(payload)) return null;
   if (isRecord(payload.guild)) return payload.guild;
@@ -78,6 +93,32 @@ function relicLevel(unit) {
   return raw > 1 ? Math.max(0, raw - 2) : Math.max(0, raw);
 }
 
+function unitPower(...units) {
+  for (const unit of units) {
+    if (!isRecord(unit)) continue;
+    const power = finiteNumber(
+      unit.gp,
+      unit.galacticPower,
+      unit.power,
+      unit.unitPower,
+      unit?.stats?.gp,
+      unit?.stats?.galacticPower,
+      unit?.stats?.power,
+    );
+    if (power > 0) return Math.round(power);
+  }
+  return 0;
+}
+
+function unitSpeed(...units) {
+  for (const unit of units) {
+    if (!isRecord(unit)) continue;
+    const raw = finiteNumber(unit.speed, unit?.stats?.Speed, unit?.stats?.speed);
+    if (raw > 0) return Math.round(raw > 10_000 ? raw / 10_000 : raw);
+  }
+  return 0;
+}
+
 function compactRoster(player) {
   return rosterOf(player)
     .map((unit) => {
@@ -89,6 +130,56 @@ function compactRoster(player) {
         stars: finiteNumber(unit.currentRarity, unit.rarity),
         gear: finiteNumber(unit.currentTier, unit.gear, unit.gearLevel),
         relic: relicLevel(unit),
+      };
+    })
+    .filter(Boolean);
+}
+
+function purchasedAbilityIds(unit) {
+  return [...new Set(
+    asArray(unit?.purchasedAbilityId)
+      .concat(asArray(unit?.purchasedAbilityIds))
+      .map((entry) => typeof entry === "string" ? entry : firstText(entry?.id, entry?.abilityId, entry?.definitionId))
+      .filter(Boolean),
+  )];
+}
+
+function richRoster(rawPlayer, calculatedPlayer) {
+  const calculatedByBaseId = new Map();
+  for (const calculatedUnit of rosterOf(calculatedPlayer)) {
+    if (!isRecord(calculatedUnit)) continue;
+    const baseId = baseIdOf(calculatedUnit);
+    if (baseId && !calculatedByBaseId.has(baseId)) calculatedByBaseId.set(baseId, calculatedUnit);
+  }
+
+  return rosterOf(rawPlayer)
+    .map((rawUnit) => {
+      if (!isRecord(rawUnit)) return null;
+      const baseId = baseIdOf(rawUnit);
+      if (!baseId) return null;
+      const calculatedUnit = calculatedByBaseId.get(baseId) || null;
+      const combatType = finiteNumber(calculatedUnit?.combatType, rawUnit?.combatType);
+      const rawSkills = asArray(rawUnit?.skill).concat(asArray(rawUnit?.skills));
+      const rawEquipment = asArray(rawUnit?.equipment);
+      const rawMods = asArray(rawUnit?.equippedStatMod).concat(asArray(rawUnit?.equippedStatMods));
+
+      return {
+        id: firstText(rawUnit.id, calculatedUnit?.id, baseId),
+        baseId,
+        definitionId: firstText(rawUnit.definitionId, rawUnit.defId, calculatedUnit?.definitionId, calculatedUnit?.defId),
+        combatType,
+        unitType: combatType === 2 ? "Ship" : combatType === 1 ? "Character" : "Unknown",
+        stars: finiteNumber(rawUnit.currentRarity, rawUnit.rarity, calculatedUnit?.currentRarity, calculatedUnit?.rarity),
+        level: finiteNumber(rawUnit.currentLevel, rawUnit.level, calculatedUnit?.currentLevel, calculatedUnit?.level),
+        gear: finiteNumber(rawUnit.currentTier, rawUnit.gear, rawUnit.gearLevel, calculatedUnit?.currentTier, calculatedUnit?.gear, calculatedUnit?.gearLevel),
+        relic: relicLevel(rawUnit) || relicLevel(calculatedUnit),
+        power: unitPower(calculatedUnit, rawUnit),
+        speed: unitSpeed(calculatedUnit, rawUnit),
+        skills: cloneJson(rawSkills, []),
+        equipment: cloneJson(rawEquipment, []),
+        equippedStatMods: cloneJson(rawMods, []),
+        purchasedAbilityIds: purchasedAbilityIds(rawUnit),
+        calculatedStats: cloneJson(calculatedUnit?.stats, {}),
       };
     })
     .filter(Boolean);
@@ -144,6 +235,35 @@ async function requestComlink(fetchImpl, config, pathname, payload) {
     } catch {
       throw new Error(`Comlink ${pathname} returned invalid JSON.`);
     }
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function requestStatsBatch(fetchImpl, config, players) {
+  if (!config.statsUrl || !players.length) return [];
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), positiveNumber(config.requestTimeoutMs, 45_000));
+  try {
+    const response = await fetchImpl(joinUrl(config.statsUrl, "/api"), {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(players),
+      redirect: "error",
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`SWGOH Stats /api returned HTTP ${response.status}${text ? `: ${text.slice(0, 180)}` : ""}`);
+    let payload;
+    try {
+      payload = text ? JSON.parse(text) : [];
+    } catch {
+      throw new Error("SWGOH Stats /api returned invalid JSON.");
+    }
+    return extractPlayers(payload);
   } finally {
     clearTimeout(timeout);
   }
@@ -227,6 +347,34 @@ function compactMember(rawPlayer, member) {
   };
 }
 
+function richMember(rawPlayer, member, calculatedPlayer = null) {
+  const summary = guildMemberSummary(member);
+  return {
+    ...summary,
+    playerId: firstText(rawPlayer?.playerId, calculatedPlayer?.playerId, summary.playerId),
+    name: firstText(rawPlayer?.name, calculatedPlayer?.name, summary.name),
+    allyCode: firstText(String(rawPlayer?.allyCode || calculatedPlayer?.allyCode || "")),
+    rosterAvailable: rosterOf(rawPlayer).length > 0,
+    characterGalacticPower: finiteNumber(
+      calculatedPlayer?.characterGalacticPower,
+      calculatedPlayer?.characterGp,
+      rawPlayer?.characterGalacticPower,
+      rawPlayer?.characterGp,
+    ),
+    shipGalacticPower: finiteNumber(
+      calculatedPlayer?.shipGalacticPower,
+      calculatedPlayer?.shipGp,
+      rawPlayer?.shipGalacticPower,
+      rawPlayer?.shipGp,
+    ),
+    units: richRoster(rawPlayer, calculatedPlayer),
+  };
+}
+
+function playerKey(player) {
+  return firstText(player?.playerId, player?.id, String(player?.allyCode || ""));
+}
+
 function createGuildService(config, dependencies = {}) {
   const fetchImpl = dependencies.fetch || globalThis.fetch;
   const now = dependencies.now || Date.now;
@@ -234,7 +382,7 @@ function createGuildService(config, dependencies = {}) {
   const memberCacheMs = positiveNumber(config.guildMemberCacheMs, 15 * 60_000);
   const concurrency = positiveNumber(config.guildConcurrency, 5);
   const guildCache = new Map();
-  const memberCache = new Map();
+  const rawPlayerCache = new Map();
   const allyGuild = new Map();
   const pendingGuild = new Map();
 
@@ -263,18 +411,11 @@ function createGuildService(config, dependencies = {}) {
     return player;
   }
 
-  async function memberByPlayerId(playerId, summary, seedPlayer = null) {
-    const cached = fresh(memberCache, playerId);
-    if (cached) {
-      return {
-        ...cached,
-        ...guildMemberSummary(summary),
-        playerId: firstText(cached.playerId, summary?.playerId),
-        name: firstText(cached.name, summary?.playerName, summary?.name),
-      };
-    }
+  async function rawPlayerByPlayerId(playerId, seedPlayer = null) {
+    const cached = fresh(rawPlayerCache, playerId);
+    if (cached) return cached;
     const rawPlayer = seedPlayer || await playerBy({ playerId });
-    return store(memberCache, playerId, compactMember(rawPlayer, summary), memberCacheMs);
+    return store(rawPlayerCache, playerId, rawPlayer, memberCacheMs);
   }
 
   async function hydrateGuild(guildId, seedPlayer, options = {}) {
@@ -295,25 +436,51 @@ function createGuildService(config, dependencies = {}) {
       if (!sourceMembers.length) throw new Error("Comlink /guild returned no public guild members.");
 
       const seedPlayerId = firstText(seedPlayer?.playerId);
-      if (seedPlayerId) {
-        const matching = sourceMembers.find((member) => firstText(member?.playerId) === seedPlayerId) || {};
-        store(memberCache, seedPlayerId, compactMember(seedPlayer, matching), memberCacheMs);
-      }
+      if (seedPlayerId) store(rawPlayerCache, seedPlayerId, seedPlayer, memberCacheMs);
 
       let failures = 0;
-      const members = await mapLimit(sourceMembers, concurrency, async (member) => {
+      const hydratedRows = await mapLimit(sourceMembers, concurrency, async (member) => {
         const playerId = firstText(member?.playerId);
         try {
-          return await memberByPlayerId(playerId, member, playerId === seedPlayerId ? seedPlayer : null);
+          const rawPlayer = await rawPlayerByPlayerId(playerId, playerId === seedPlayerId ? seedPlayer : null);
+          return { member, rawPlayer, error: "" };
         } catch (error) {
           failures += 1;
+          return { member, rawPlayer: null, error: String(error?.message || error).slice(0, 180) };
+        }
+      });
+
+      const rawPlayers = hydratedRows.map((row) => row.rawPlayer).filter(Boolean);
+      let calculatedPlayers = [];
+      let calculationError = "";
+      if (includeActivity && rawPlayers.length && config.statsUrl) {
+        try {
+          calculatedPlayers = await requestStatsBatch(fetchImpl, config, rawPlayers);
+        } catch (error) {
+          calculationError = String(error?.message || error).slice(0, 180);
+        }
+      }
+
+      const calculatedByKey = new Map();
+      for (const calculatedPlayer of calculatedPlayers) {
+        const key = playerKey(calculatedPlayer);
+        if (key && !calculatedByKey.has(key)) calculatedByKey.set(key, calculatedPlayer);
+      }
+
+      let calculatedMatches = 0;
+      const members = hydratedRows.map((row) => {
+        if (!row.rawPlayer) {
           return {
-            ...guildMemberSummary(member),
+            ...guildMemberSummary(row.member),
             rosterAvailable: false,
             units: [],
-            error: String(error?.message || error).slice(0, 180),
+            error: row.error,
           };
         }
+        if (!includeActivity) return compactMember(row.rawPlayer, row.member);
+        const calculated = calculatedByKey.get(playerKey(row.rawPlayer)) || null;
+        if (calculated) calculatedMatches += 1;
+        return richMember(row.rawPlayer, row.member, calculated);
       });
 
       const hydrated = members.filter((member) => member.rosterAvailable).length;
@@ -328,7 +495,19 @@ function createGuildService(config, dependencies = {}) {
           complete: failures === 0 && hydrated === sourceMembers.length,
           concurrency: Math.min(concurrency, sourceMembers.length),
         },
-        ...(includeActivity ? { activity: guildActivity(guild) } : {}),
+        ...(includeActivity ? {
+          rosterDetail: "rich",
+          activity: guildActivity(guild),
+          calculation: {
+            source: "SWGOH Stats",
+            configured: Boolean(config.statsUrl),
+            requested: rawPlayers.length,
+            calculated: calculatedMatches,
+            failed: Math.max(0, rawPlayers.length - calculatedMatches),
+            complete: Boolean(config.statsUrl) && !calculationError && calculatedMatches === rawPlayers.length,
+            ...(calculationError ? { error: calculationError } : {}),
+          },
+        } : { rosterDetail: "compact" }),
         fetchedAt: new Date(now()).toISOString(),
       };
       return store(guildCache, cacheKey, body, guildCacheMs);
@@ -352,6 +531,7 @@ function createGuildService(config, dependencies = {}) {
     const seedPlayer = await playerBy({ allyCode: normalized });
     const guildId = firstText(seedPlayer.guildId, seedPlayer.guild?.id);
     if (!guildId) throw new Error("This player is not currently in a public guild.");
+    store(rawPlayerCache, firstText(seedPlayer.playerId), seedPlayer, memberCacheMs);
     store(allyGuild, normalized, guildId, guildCacheMs);
     return hydrateGuild(guildId, seedPlayer, { includeActivity });
   }
@@ -398,6 +578,7 @@ function createGuildAwareServer(baseGateway, config, dependencies = {}) {
       writeJson(response, 200, body, {
         "X-Guild-Source": "comlink-live",
         "X-Guild-Activity": includeActivity ? "included" : "omitted",
+        "X-Guild-Roster-Detail": includeActivity ? "rich" : "compact",
       });
     } catch (error) {
       const message = error?.name === "AbortError" ? "Guild request timed out." : String(error?.message || error);
@@ -414,9 +595,15 @@ module.exports = {
   createGuildService,
   extractGuild,
   extractPlayer,
+  extractPlayers,
   guildActivity,
   guildMemberSummary,
   mapLimit,
   relicLevel,
   requestComlink,
+  requestStatsBatch,
+  richMember,
+  richRoster,
+  unitPower,
+  unitSpeed,
 };
