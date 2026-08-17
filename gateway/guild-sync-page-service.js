@@ -35,6 +35,14 @@ function finiteNumber(...values) {
   return 0;
 }
 
+function firstPositive(...values) {
+  for (const value of values) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return 0;
+}
+
 function positiveInteger(value, fallback, min = 1, max = 10) {
   const parsed = Math.floor(Number(value));
   if (!Number.isFinite(parsed)) return fallback;
@@ -67,6 +75,78 @@ function guildProfile(guild, fallbackId) {
 
 function playerKey(player) {
   return firstText(player?.playerId, player?.id, String(player?.allyCode || ""));
+}
+
+function durableUnit(unit = {}) {
+  const baseId = firstText(unit.baseId, unit.baseID, unit.definitionId).split(":")[0];
+  if (!baseId) return null;
+  return {
+    id: firstText(unit.id, baseId),
+    baseId,
+    definitionId: firstText(unit.definitionId),
+    combatType: finiteNumber(unit.combatType),
+    unitType: firstText(unit.unitType),
+    stars: finiteNumber(unit.stars, unit.rarity),
+    level: finiteNumber(unit.level),
+    gear: finiteNumber(unit.gear, unit.gearLevel),
+    relic: finiteNumber(unit.relic, unit.relicTier),
+    power: finiteNumber(unit.power, unit.gp, unit.galacticPower),
+    speed: finiteNumber(unit.speed),
+    purchasedAbilityIds: [...new Set(asArray(unit.purchasedAbilityIds).map((value) => firstText(value)).filter(Boolean))],
+  };
+}
+
+function durableMember(rawPlayer, guildMember, calculatedPlayer = null) {
+  const rich = richMember(rawPlayer, guildMember, calculatedPlayer);
+  const characterGalacticPower = firstPositive(
+    rawPlayer?.characterGalacticPower,
+    rawPlayer?.characterGp,
+    rawPlayer?.gpChar,
+    calculatedPlayer?.characterGalacticPower,
+    calculatedPlayer?.characterGp,
+    calculatedPlayer?.gpChar,
+    rich.characterGalacticPower,
+  );
+  const shipGalacticPower = firstPositive(
+    rawPlayer?.shipGalacticPower,
+    rawPlayer?.shipGp,
+    rawPlayer?.gpShip,
+    calculatedPlayer?.shipGalacticPower,
+    calculatedPlayer?.shipGp,
+    calculatedPlayer?.gpShip,
+    rich.shipGalacticPower,
+  );
+  const galacticPower = firstPositive(
+    rawPlayer?.galacticPower,
+    rawPlayer?.gp,
+    rawPlayer?.gpFull,
+    guildMember?.galacticPower,
+    rich.galacticPower,
+    characterGalacticPower + shipGalacticPower,
+  );
+
+  return {
+    playerId: firstText(rich.playerId),
+    name: firstText(rich.name),
+    allyCode: firstText(String(rich.allyCode || "")),
+    level: finiteNumber(rich.level),
+    memberLevel: finiteNumber(rich.memberLevel),
+    guildXp: finiteNumber(rich.guildXp),
+    galacticPower,
+    squadPower: finiteNumber(rich.squadPower),
+    lastActivityTime: firstText(String(rich.lastActivityTime || "")),
+    guildJoinTime: firstText(String(rich.guildJoinTime || "")),
+    playerTitle: firstText(rich.playerTitle),
+    playerPortrait: firstText(rich.playerPortrait),
+    lifetimeSeasonScore: firstText(String(rich.lifetimeSeasonScore || "")),
+    leagueId: firstText(rich.leagueId),
+    memberContribution: asArray(rich.memberContribution),
+    seasonStatus: asArray(rich.seasonStatus),
+    rosterAvailable: rich.rosterAvailable === true,
+    characterGalacticPower,
+    shipGalacticPower,
+    units: asArray(rich.units).map(durableUnit).filter(Boolean),
+  };
 }
 
 function writeJson(response, status, body, headers = {}) {
@@ -178,7 +258,7 @@ function createGuildSyncPageService(baseGateway, config, dependencies = {}) {
       }
       const calculated = calculatedByKey.get(playerKey(row.rawPlayer)) || null;
       if (calculated) calculatedMatches += 1;
-      return richMember(row.rawPlayer, row.member, calculated);
+      return durableMember(row.rawPlayer, row.member, calculated);
     });
 
     const hydrated = members.filter((member) => member.rosterAvailable).length;
@@ -194,6 +274,7 @@ function createGuildSyncPageService(baseGateway, config, dependencies = {}) {
         totalMembers: total,
         nextOffset: nextOffset < total ? nextOffset : null,
         complete: nextOffset >= total,
+        projection: "durable-baseline-v1",
       },
       hydration: {
         requested: sourceSlice.length,
@@ -203,7 +284,7 @@ function createGuildSyncPageService(baseGateway, config, dependencies = {}) {
         concurrency: Math.min(concurrency, sourceSlice.length || 1),
       },
       ...(includeActivity ? {
-        rosterDetail: "rich-page",
+        rosterDetail: "durable-baseline-page",
         activity: guildActivity(manifest.guild),
         calculation: {
           source: "SWGOH Stats",
@@ -214,7 +295,7 @@ function createGuildSyncPageService(baseGateway, config, dependencies = {}) {
           complete: Boolean(config.statsUrl) && !calculationError && calculatedMatches === rawPlayers.length,
           ...(calculationError ? { error: calculationError } : {}),
         },
-      } : { rosterDetail: "compact-page" }),
+      } : { rosterDetail: "durable-baseline-page" }),
       fetchedAt: new Date(now()).toISOString(),
     };
   }
@@ -249,6 +330,7 @@ function createGuildSyncPageService(baseGateway, config, dependencies = {}) {
         "X-Guild-Source": "comlink-live",
         "X-Guild-Sync-Page": `${body.page.offset}:${body.page.returned}:${body.page.totalMembers}`,
         "X-Guild-Roster-Detail": body.rosterDetail,
+        "X-Guild-Persistence-Projection": body.page.projection,
       });
     } catch (error) {
       const message = error?.name === "AbortError" ? "Guild sync page request timed out." : String(error?.message || error);
@@ -260,5 +342,7 @@ function createGuildSyncPageService(baseGateway, config, dependencies = {}) {
 
 module.exports = {
   createGuildSyncPageService,
+  durableMember,
+  durableUnit,
   guildProfile,
 };
