@@ -94,6 +94,27 @@ function compactSkillTiers(unit = {}) {
   return result;
 }
 
+function compactFinalStats(stats = {}, unit = {}) {
+  const finalSource = isRecord(stats?.final) ? stats.final : {};
+  const final = {};
+  for (const [key, value] of Object.entries(finalSource).slice(0, 80)) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) final[key] = numeric;
+  }
+  const equipmentCount = asArray(unit.equipment).concat(asArray(unit.equipped)).length;
+  const equippedModCount = Math.max(
+    asArray(unit.equippedStatMods).length,
+    asArray(unit.equippedStatMod).length,
+    asArray(unit.mods).length,
+  );
+  return {
+    final,
+    equipmentCount,
+    equippedModCount,
+    skillCount: compactSkillTiers(unit).length,
+  };
+}
+
 function durableUnit(unit = {}) {
   const baseId = firstText(unit.baseId, unit.baseID, unit.definitionId).split(":")[0];
   if (!baseId) return null;
@@ -111,6 +132,7 @@ function durableUnit(unit = {}) {
     speed: finiteNumber(unit.speed),
     skills: compactSkillTiers(unit),
     purchasedAbilityIds: [...new Set(asArray(unit.purchasedAbilityIds).map((value) => firstText(value)).filter(Boolean))],
+    calculatedStats: compactFinalStats(unit.calculatedStats, unit),
   };
 }
 
@@ -292,7 +314,7 @@ function createGuildSyncPageService(baseGateway, config, dependencies = {}) {
         totalMembers: total,
         nextOffset: nextOffset < total ? nextOffset : null,
         complete: nextOffset >= total,
-        projection: "durable-baseline-v1",
+        projection: "durable-analytics-v2",
       },
       hydration: {
         requested: sourceSlice.length,
@@ -302,7 +324,7 @@ function createGuildSyncPageService(baseGateway, config, dependencies = {}) {
         concurrency: Math.min(concurrency, sourceSlice.length || 1),
       },
       ...(includeActivity ? {
-        rosterDetail: "durable-baseline-page",
+        rosterDetail: "durable-analytics-page",
         activity: guildActivity(manifest.guild),
         calculation: {
           source: "SWGOH Stats",
@@ -313,7 +335,7 @@ function createGuildSyncPageService(baseGateway, config, dependencies = {}) {
           complete: Boolean(config.statsUrl) && !calculationError && calculatedMatches === rawPlayers.length,
           ...(calculationError ? { error: calculationError } : {}),
         },
-      } : { rosterDetail: "durable-baseline-page" }),
+      } : { rosterDetail: "durable-analytics-page" }),
       fetchedAt: new Date(now()).toISOString(),
     };
   }
@@ -359,6 +381,7 @@ function createGuildSyncPageService(baseGateway, config, dependencies = {}) {
 }
 
 module.exports = {
+  compactFinalStats,
   compactSkillTiers,
   createGuildSyncPageService,
   durableMember,
