@@ -77,6 +77,23 @@ function playerKey(player) {
   return firstText(player?.playerId, player?.id, String(player?.allyCode || ""));
 }
 
+function compactSkillTiers(unit = {}) {
+  const source = asArray(unit.skills).concat(asArray(unit.skill));
+  const seen = new Set();
+  const result = [];
+  for (const skill of source) {
+    if (!isRecord(skill)) continue;
+    const id = firstText(skill.id, skill.skillId, skill.abilityId, skill.definitionId);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    result.push({
+      id,
+      tier: Math.max(0, Math.floor(finiteNumber(skill.tier, skill.currentTier, skill.level))),
+    });
+  }
+  return result;
+}
+
 function durableUnit(unit = {}) {
   const baseId = firstText(unit.baseId, unit.baseID, unit.definitionId).split(":")[0];
   if (!baseId) return null;
@@ -92,6 +109,7 @@ function durableUnit(unit = {}) {
     relic: finiteNumber(unit.relic, unit.relicTier),
     power: finiteNumber(unit.power, unit.gp, unit.galacticPower),
     speed: finiteNumber(unit.speed),
+    skills: compactSkillTiers(unit),
     purchasedAbilityIds: [...new Set(asArray(unit.purchasedAbilityIds).map((value) => firstText(value)).filter(Boolean))],
   };
 }
@@ -341,6 +359,7 @@ function createGuildSyncPageService(baseGateway, config, dependencies = {}) {
 }
 
 module.exports = {
+  compactSkillTiers,
   createGuildSyncPageService,
   durableMember,
   durableUnit,
