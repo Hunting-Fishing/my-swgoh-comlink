@@ -5,6 +5,7 @@ const { createProductionFetch, sameService } = require("./production");
 const { createGuildAwareServer } = require("./guild-service");
 const { createModAwareServer } = require("./mod-service");
 const { createVerificationAwareServer } = require("./verification-service");
+const { fetchStatsBatched } = require("./stats-batching");
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -167,7 +168,9 @@ function createRosterPreservingFetch(config, fetchImpl = globalThis.fetch, env =
       }
     }
 
-    const response = await productionFetch(url, options);
+    const response = isStatsRequest && Array.isArray(rawPayload) && rawPayload.length > 1
+      ? await fetchStatsBatched(productionFetch, url, options, rawPayload, env)
+      : await productionFetch(url, options);
     if (!isStatsRequest || !response.ok || rawPayload == null) return response;
 
     const text = await response.text();
@@ -189,7 +192,11 @@ function createRosterPreservingFetch(config, fetchImpl = globalThis.fetch, env =
     const rawCount = rawPlayers.reduce((sum, player) => sum + rosterOf(player).length, 0);
     const calculatedCount = calculatedPlayers.reduce((sum, player) => sum + rosterOf(player).length, 0);
     const mergedCount = mergedPlayers.reduce((sum, player) => sum + rosterOf(player).length, 0);
+    const batches = response.headers.get("X-SWGOH-Stats-Batches");
 
+    if (batches) {
+      console.log(`[gateway] SWGOH Stats calculated ${rawPlayers.length} players across ${batches} bounded batches`);
+    }
     if (rawCount !== calculatedCount) {
       console.warn(`[gateway] SWGOH Stats roster size mismatch raw=${rawCount} calculated=${calculatedCount}; preserving merged=${mergedCount}`);
     } else {
