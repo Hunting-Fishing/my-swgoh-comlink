@@ -3,6 +3,7 @@
 const http = require("node:http");
 const crypto = require("node:crypto");
 const { publicPlayerSummary } = require("./player-summary");
+const { normalizeDatacrons, summarizeDatacrons } = require("./datacron-intelligence");
 
 const MAX_BODY_BYTES = 100 * 1024 * 1024;
 const CHARACTER_COMBAT_TYPE = 1;
@@ -949,7 +950,9 @@ function createGateway(config = loadConfig(), dependencies = {}) {
       rawPlayer.datacrons,
       rawPlayer.datacronList,
     ].find(Array.isArray);
-    const datacronCount = Array.isArray(datacronCollection) ? datacronCollection.length : null;
+    const datacrons = Array.isArray(datacronCollection) ? normalizeDatacrons(datacronCollection) : null;
+    const datacronSummary = datacrons !== null ? summarizeDatacrons(datacrons) : null;
+    const datacronCount = datacrons !== null ? datacrons.length : null;
 
     const sixDotCandidates = [
       sixDotModsOf(calculatedPlayer, context),
@@ -996,6 +999,7 @@ function createGateway(config = loadConfig(), dependencies = {}) {
       unlockedCosmetics: Array.isArray(rawPlayer.unlockedPlayerTitle) || Array.isArray(rawPlayer.unlockedPlayerPortrait),
       seasonStatus: Array.isArray(rawPlayer.seasonStatus),
       datacrons: datacronCount !== null,
+      datacronDetails: datacrons !== null,
       sixDotMods: sixDotMods !== null,
       competitiveProfile: Object.keys(competitive).length > 0,
       abilityProgression: true,
@@ -1015,6 +1019,7 @@ function createGateway(config = loadConfig(), dependencies = {}) {
       profileStats: publicSummary.profileStats,
       purchasedAbilities: publicSummary.purchasedAbilities,
       seasonStatus: publicSummary.seasonStatus,
+      ...(datacrons !== null ? { datacrons, datacronSummary } : {}),
       ...(publicSummary.selectedCosmetics ? { selectedCosmetics: publicSummary.selectedCosmetics } : {}),
       source: "live",
       fetchedAt: profile.updatedAt,
@@ -1023,6 +1028,7 @@ function createGateway(config = loadConfig(), dependencies = {}) {
         calculatedRoster: calculatedRoster.length,
         characters: characters.length,
         ships: ships.length,
+        datacrons: datacronCount,
         missingDefinitions,
         unknownCombatType,
       },
