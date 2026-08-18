@@ -3,7 +3,7 @@ FROM node:24-alpine
 WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
-COPY server.js bootstrap.js production.js recovery.js guild-service.js guild-sync-page-service.js player-summary.js mod-normalizer.js mod-service.js gac-service.js verification-service.js stats-batching.js ./
+COPY server.js bootstrap.js production.js recovery.js guild-service.js guild-sync-page-service.js player-summary.js mod-normalizer.js mod-service.js gac-service.js verification-service.js stats-batching.js datacron-intelligence.js ./
 COPY test ./test
 RUN npm test
 
