@@ -8,6 +8,7 @@ const { createModAwareServer } = require("./mod-service");
 const { createGacAwareServer } = require("./gac-service");
 const { createVerificationAwareServer } = require("./verification-service");
 const { fetchStatsBatched } = require("./stats-batching");
+const { observeGameData, observeLocalization } = require("./datacron-intelligence");
 
 function isRecord(value) { return value !== null && typeof value === "object" && !Array.isArray(value); }
 function firstText(...values) { for (const value of values) if (typeof value === "string" && value.trim()) return value.trim(); return ""; }
@@ -69,6 +70,21 @@ function responseWithJson(response, body) {
   return new Response(JSON.stringify(body), { status: response.status, statusText: response.statusText, headers });
 }
 
+async function observeComlinkMetadataResponse(response, url, config) {
+  if (!response?.ok || !sameService(url, config.comlinkUrl)) return;
+  if (!["/data", "/localization"].includes(url.pathname)) return;
+  try {
+    const payload = await response.clone().json();
+    const status = url.pathname === "/data" ? observeGameData(payload) : observeLocalization(payload);
+    if (status?.observed) {
+      const count = url.pathname === "/data" ? status.abilities : status.strings;
+      console.log(`[gateway] datacron ${url.pathname === "/data" ? "ability" : "localization"} context observed (${count})`);
+    }
+  } catch (error) {
+    console.warn(`[gateway] datacron context observation skipped for ${url.pathname}: ${error?.message || error}`);
+  }
+}
+
 function createRosterPreservingFetch(config, fetchImpl = globalThis.fetch, env = process.env) {
   const productionFetch = createProductionFetch(config, fetchImpl, env);
   return async function rosterPreservingFetch(input, options = {}) {
@@ -80,6 +96,7 @@ function createRosterPreservingFetch(config, fetchImpl = globalThis.fetch, env =
     const response = isStatsRequest && Array.isArray(rawPayload) && rawPayload.length > 1
       ? await fetchStatsBatched(productionFetch, url, options, rawPayload, env)
       : await productionFetch(url, options);
+    await observeComlinkMetadataResponse(response, url, config);
     if (!isStatsRequest || !response.ok || rawPayload == null) return response;
     const text = await response.text();
     let calculatedPayload;
@@ -113,4 +130,4 @@ function start() {
 }
 
 if (require.main === module) start();
-module.exports = { baseIdOf, createRosterPreservingFetch, mergePlayer, mergeRoster, mergeStatsPayload, mergeUnit, preserveRawPlayerTotals, rosterOf };
+module.exports = { baseIdOf, createRosterPreservingFetch, mergePlayer, mergeRoster, mergeStatsPayload, mergeUnit, observeComlinkMetadataResponse, preserveRawPlayerTotals, rosterOf };
