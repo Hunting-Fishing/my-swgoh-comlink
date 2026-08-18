@@ -2,6 +2,7 @@
 
 const http = require("node:http");
 const crypto = require("node:crypto");
+const { extractPlayer } = require("./guild-service");
 const { gacRating } = require("./player-summary");
 const { requestPlayer } = require("./mod-service");
 
@@ -13,6 +14,8 @@ const LEAGUE_NAMES = new Map([
   [20, "CARBONITE"],
 ]);
 const ALLOWED_LEAGUES = new Set(LEAGUE_NAMES.values());
+const DEFAULT_BRACKET_PROBE_STEP = 1024;
+const DEFAULT_BRACKET_SCAN_BATCH = 24;
 
 function positiveNumber(value, fallback) {
   const numeric = Number(value);
@@ -155,13 +158,67 @@ function ratingSummary(player) {
   };
 }
 
+function currentSeasonStatus(player, currentEvent) {
+  const statuses = asArray(player?.seasonStatus).filter(isRecord);
+  if (!statuses.length) return null;
+  const eventId = firstText(currentEvent?.eventInstanceId);
+  if (eventId) {
+    const exact = statuses.find((status) => firstText(status?.eventInstanceId) === eventId);
+    if (exact) return exact;
+    const instance = firstText(currentEvent?.instanceId);
+    const season = firstText(currentEvent?.id);
+    const compatible = statuses.find((status) => {
+      const statusEvent = firstText(status?.eventInstanceId);
+      return statusEvent && ((instance && statusEvent.includes(instance)) || (season && statusEvent.includes(season)));
+    });
+    if (compatible) return compatible;
+  }
+  return statuses[0];
+}
+
+function playerMatchesBracketEntry(player, entry) {
+  const playerId = firstText(player?.playerId);
+  const entryId = firstText(entry?.playerId);
+  if (playerId && entryId && playerId === entryId) return true;
+  const playerName = firstText(player?.name).toLowerCase();
+  const entryName = firstText(entry?.name).toLowerCase();
+  return Boolean(playerName && entryName && playerName === entryName);
+}
+
+function bracketIndexHints(player, currentEvent) {
+  const status = currentSeasonStatus(player, currentEvent) || {};
+  const rank = Number(status?.rank ?? 0);
+  if (!Number.isFinite(rank) || rank <= 0) return [];
+  const estimate = Math.max(0, Math.floor((rank - 1) / 8));
+  const output = [estimate];
+  for (let offset = 1; offset <= 8; offset += 1) {
+    if (estimate - offset >= 0) output.push(estimate - offset);
+    output.push(estimate + offset);
+  }
+  return output;
+}
+
+async function loadPlayerById(fetchImpl, config, playerId) {
+  const payload = await postComlink(fetchImpl, config, "/player", {
+    payload: { playerId },
+    enums: false,
+  });
+  const player = extractPlayer(payload);
+  if (!player) throw new Error(`Comlink /player did not return profile ${playerId}.`);
+  return player;
+}
+
 function createGacService(config, dependencies = {}) {
   const fetchImpl = dependencies.fetch || globalThis.fetch;
   const now = dependencies.now || Date.now;
-  const eventCacheMs = positiveNumber(dependencies.env?.GAC_EVENT_CACHE_SECONDS || process.env.GAC_EVENT_CACHE_SECONDS, 60) * 1000;
-  const bracketCacheMs = positiveNumber(dependencies.env?.GAC_BRACKET_CACHE_SECONDS || process.env.GAC_BRACKET_CACHE_SECONDS, 30) * 1000;
+  const env = dependencies.env || process.env;
+  const eventCacheMs = positiveNumber(env.GAC_EVENT_CACHE_SECONDS, 60) * 1000;
+  const bracketCacheMs = positiveNumber(env.GAC_BRACKET_CACHE_SECONDS, 30) * 1000;
+  const bracketProfileCacheMs = positiveNumber(env.GAC_BRACKET_PROFILE_CACHE_SECONDS, 120) * 1000;
+  const maxBracketScan = Math.max(64, Math.floor(positiveNumber(env.GAC_BRACKET_SCAN_MAX, 4096)));
   let eventCache = null;
   const bracketCache = new Map();
+  const bracketProfileCache = new Map();
 
   async function loadCurrentEvent() {
     if (eventCache && eventCache.expiresAt > now()) return eventCache.value;
@@ -214,6 +271,104 @@ function createGacService(config, dependencies = {}) {
     return value;
   }
 
+  async function findLastBracketIndex(league) {
+    const first = await loadBracket(league, 0);
+    if (!first.playerCount) return -1;
+    let lo = 0;
+    let hi = Math.min(DEFAULT_BRACKET_PROBE_STEP, maxBracketScan);
+    while (hi < maxBracketScan) {
+      const probe = await loadBracket(league, hi);
+      if (!probe.playerCount) break;
+      lo = hi;
+      hi = Math.min(maxBracketScan, hi * 2);
+      if (hi === lo) break;
+    }
+    const highProbe = await loadBracket(league, hi);
+    if (highProbe.playerCount && hi >= maxBracketScan) return maxBracketScan;
+    while (lo < hi - 1) {
+      const mid = Math.floor((lo + hi) / 2);
+      const probe = await loadBracket(league, mid);
+      if (probe.playerCount) lo = mid;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  async function enrichBracketPlayers(players, ownPlayer) {
+    const ownId = firstText(ownPlayer?.playerId);
+    const ownSummary = ratingSummary(ownPlayer);
+    return Promise.all(players.map(async (entry) => {
+      if (ownId && entry.playerId === ownId) return { ...entry, allyCode: ownSummary.allyCode, profileAvailable: true };
+      const cached = bracketProfileCache.get(entry.playerId);
+      if (cached && cached.expiresAt > now()) return { ...entry, ...cached.value };
+      if (!entry.playerId) return { ...entry, allyCode: "", profileAvailable: false };
+      try {
+        const profile = await loadPlayerById(fetchImpl, config, entry.playerId);
+        const summary = ratingSummary(profile);
+        const value = { allyCode: summary.allyCode, profileAvailable: Boolean(summary.allyCode) };
+        bracketProfileCache.set(entry.playerId, { value, expiresAt: now() + bracketProfileCacheMs });
+        return { ...entry, ...value };
+      } catch {
+        return { ...entry, allyCode: "", profileAvailable: false };
+      }
+    }));
+  }
+
+  async function loadBracketByPlayer(allyCode) {
+    const normalized = String(allyCode || "").replace(/\D/g, "");
+    if (!/^\d{9}$/.test(normalized)) throw new Error("A valid 9-digit Ally Code is required.");
+    const player = await requestPlayer(fetchImpl, config, normalized);
+    const summary = ratingSummary(player);
+    if (!summary.league) throw new Error("The player's current GAC league is not available.");
+    const current = await loadCurrentEvent();
+    if (!current?.active || !current?.event?.eventInstanceId) throw new Error("No active GAC event is currently exposed by Comlink.");
+
+    const checked = new Set();
+    const inspect = async (index) => {
+      if (!Number.isInteger(index) || index < 0 || index > maxBracketScan || checked.has(index)) return null;
+      checked.add(index);
+      const bracket = await loadBracket(summary.league, index);
+      return bracket.players.some((entry) => playerMatchesBracketEntry(player, entry)) ? bracket : null;
+    };
+
+    for (const hint of bracketIndexHints(player, current.event)) {
+      const found = await inspect(hint);
+      if (found) {
+        const players = await enrichBracketPlayers(found.players, player);
+        return {
+          ...found,
+          lookup: { allyCode: normalized, name: summary.name, playerId: summary.playerId, method: "rank-hint" },
+          players,
+          opponents: players.filter((entry) => !playerMatchesBracketEntry(player, entry)),
+        };
+      }
+    }
+
+    const last = await findLastBracketIndex(summary.league);
+    const end = Math.min(last, maxBracketScan);
+    for (let start = 0; start <= end; start += DEFAULT_BRACKET_SCAN_BATCH) {
+      const indexes = [];
+      for (let index = start; index < Math.min(start + DEFAULT_BRACKET_SCAN_BATCH, end + 1); index += 1) {
+        if (!checked.has(index)) indexes.push(index);
+      }
+      const brackets = await Promise.all(indexes.map((index) => loadBracket(summary.league, index)));
+      const found = brackets.find((bracket) => bracket.players.some((entry) => playerMatchesBracketEntry(player, entry)));
+      if (found) {
+        const players = await enrichBracketPlayers(found.players, player);
+        return {
+          ...found,
+          lookup: { allyCode: normalized, name: summary.name, playerId: summary.playerId, method: "bracket-scan" },
+          players,
+          opponents: players.filter((entry) => !playerMatchesBracketEntry(player, entry)),
+        };
+      }
+    }
+
+    const error = new Error(`The player's live ${summary.league} bracket was not found within ${maxBracketScan + 1} bracket indexes.`);
+    error.status = 404;
+    throw error;
+  }
+
   async function loadPlayerContext(allyCode) {
     const player = await requestPlayer(fetchImpl, config, allyCode);
     const current = await loadCurrentEvent();
@@ -226,7 +381,7 @@ function createGacService(config, dependencies = {}) {
     };
   }
 
-  return { loadBracket, loadCurrentEvent, loadPlayerContext };
+  return { loadBracket, loadBracketByPlayer, loadCurrentEvent, loadPlayerContext };
 }
 
 function writeJson(response, status, body, headers = {}) {
@@ -244,10 +399,11 @@ function createGacAwareServer(baseGateway, config, dependencies = {}) {
   return http.createServer(async (request, response) => {
     const url = new URL(request.url || "/", "http://gateway.local");
     const bracketMatch = url.pathname.match(/^\/v1\/gac\/bracket\/([A-Za-z]+)\/(\d+)$/);
+    const bracketByPlayerMatch = url.pathname.match(/^\/v1\/gac\/bracket\/by-player\/(\d{9})$/);
     const playerMatch = url.pathname.match(/^\/v1\/gac\/player\/(\d{9})$/);
     const isEvent = url.pathname === "/v1/gac/current-event";
 
-    if (!bracketMatch && !playerMatch && !isEvent) {
+    if (!bracketMatch && !bracketByPlayerMatch && !playerMatch && !isEvent) {
       baseGateway.emit("request", request, response);
       return;
     }
@@ -267,27 +423,33 @@ function createGacAwareServer(baseGateway, config, dependencies = {}) {
     try {
       const body = isEvent
         ? await service.loadCurrentEvent()
-        : playerMatch
-          ? await service.loadPlayerContext(playerMatch[1])
-          : await service.loadBracket(bracketMatch[1], bracketMatch[2]);
+        : bracketByPlayerMatch
+          ? await service.loadBracketByPlayer(bracketByPlayerMatch[1])
+          : playerMatch
+            ? await service.loadPlayerContext(playerMatch[1])
+            : await service.loadBracket(bracketMatch[1], bracketMatch[2]);
       writeJson(response, 200, body, { "X-GAC-Source": "comlink-live" });
     } catch (error) {
+      const status = Number(error?.status) === 404 ? 404 : 502;
       const message = error?.name === "AbortError" ? "GAC request timed out." : String(error?.message || error);
       console.error(`[gateway:gac] ${error?.stack || error}`);
-      writeJson(response, 502, { error: message.slice(0, 240), service: "Comlink", stage: "gac" });
+      writeJson(response, status, { error: message.slice(0, 240), service: "Comlink", stage: "gac" });
     }
   });
 }
 
 module.exports = {
   LEAGUE_NAMES,
+  bracketIndexHints,
   bracketPlayers,
   createGacAwareServer,
   createGacService,
   currentGacEvent,
+  currentSeasonStatus,
   eventInstanceId,
   normalizeEvent,
   normalizeLeague,
+  playerMatchesBracketEntry,
   postComlink,
   ratingSummary,
 };
