@@ -92,6 +92,47 @@ function normalizeDatacrons(value) {
   return Object.freeze(value.map(normalizeDatacron).filter(Boolean));
 }
 
+function localizedText(strings, key, fallback = "") {
+  const lookup = clean(key);
+  if (lookup && strings instanceof Map) {
+    const value = clean(strings.get(lookup));
+    if (value) return value;
+  }
+  return clean(fallback);
+}
+
+function enrichAffixAbilityText(affix = {}, abilityMap = new Map(), strings = new Map()) {
+  const abilityId = clean(affix?.abilityId);
+  if (!abilityId) return Object.freeze({ ...affix, abilityTextResolved: false });
+  const ability = abilityMap instanceof Map ? abilityMap.get(abilityId) : null;
+  if (!ability || typeof ability !== "object") {
+    return Object.freeze({ ...affix, abilityTextResolved: false });
+  }
+
+  const abilityNameKey = clean(ability.nameKey || ability.name_key);
+  const abilityDescKey = clean(ability.descKey || ability.descriptionKey || ability.desc_key);
+  const abilityName = localizedText(strings, abilityNameKey, ability.name);
+  const abilityDescription = localizedText(strings, abilityDescKey, ability.description || ability.desc);
+  const abilityTextResolved = Boolean(abilityName || abilityDescription);
+
+  return Object.freeze({
+    ...affix,
+    abilityNameKey,
+    abilityDescKey,
+    ...(abilityName ? { abilityName } : {}),
+    ...(abilityDescription ? { abilityDescription } : {}),
+    abilityTextResolved,
+  });
+}
+
+function enrichDatacrons(datacrons, abilityMap = new Map(), strings = new Map()) {
+  if (!Array.isArray(datacrons)) return datacrons;
+  return Object.freeze(datacrons.map((datacron) => Object.freeze({
+    ...datacron,
+    affixes: Object.freeze(asArray(datacron?.affixes).map((affix) => enrichAffixAbilityText(affix, abilityMap, strings))),
+  })));
+}
+
 function summarizeDatacrons(value) {
   const datacrons = asArray(value);
   const affixes = datacrons.flatMap((datacron) => asArray(datacron?.affixes));
@@ -104,11 +145,14 @@ function summarizeDatacrons(value) {
     locked: datacrons.filter((datacron) => datacron?.locked === true).length,
     rerolled: datacrons.filter((datacron) => Number(datacron?.rerollCount) > 0).length,
     abilityAffixes: affixes.filter((affix) => Boolean(affix?.abilityId)).length,
+    resolvedAbilityAffixes: affixes.filter((affix) => affix?.abilityTextResolved === true).length,
     statAffixes: affixes.filter((affix) => affix?.statType !== null && affix?.statType !== undefined).length,
   });
 }
 
 module.exports = {
+  enrichAffixAbilityText,
+  enrichDatacrons,
   normalizeAffix,
   normalizeDatacron,
   normalizeDatacrons,
