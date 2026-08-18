@@ -3,8 +3,12 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const {
+  enrichAffixAbilityText,
   normalizeDatacrons,
+  observeGameData,
+  observeLocalization,
   summarizeDatacrons,
+  textContextStatus,
 } = require("../datacron-intelligence");
 
 test("normalizes only public Comlink datacron instance fields without inventing bonus descriptions", () => {
@@ -62,7 +66,56 @@ test("normalizes only public Comlink datacron instance fields without inventing 
   assert.equal(datacrons[0].affixes[2].abilityId, "datacron_darkside_bonus_001");
   assert.equal(datacrons[0].affixes[2].targetRule, "targetrule_darkside");
   assert.equal(datacrons[0].affixes[2].requiredRelicTier, 1);
-  assert.equal(Object.hasOwn(datacrons[0].affixes[2], "description"), false);
+  assert.equal(Object.hasOwn(datacrons[0].affixes[2], "abilityDescription"), false);
+  assert.equal(datacrons[0].affixes[2].abilityTextResolved, false);
+});
+
+test("observed gameData ability and localization resolve official datacron ability name and description", () => {
+  const gameStatus = observeGameData({
+    data: {
+      ability: [{
+        id: "DC_ABILITY_1",
+        nameKey: "DC_ABILITY_1_NAME",
+        descKey: "DC_ABILITY_1_DESC",
+      }],
+    },
+  });
+  const localizationStatus = observeLocalization({
+    ENG_US: {
+      DC_ABILITY_1_NAME: "Calculated Risk",
+      DC_ABILITY_1_DESC: "At the start of battle, eligible allies gain a bonus.",
+    },
+  });
+  assert.equal(gameStatus.observed, true);
+  assert.equal(gameStatus.abilities, 1);
+  assert.equal(localizationStatus.observed, true);
+  assert.ok(localizationStatus.strings >= 2);
+
+  const datacrons = normalizeDatacrons([{
+    id: "DC1",
+    setId: 33,
+    affix: [{ abilityId: "DC_ABILITY_1", targetRule: "target_dark" }],
+  }]);
+  const affix = datacrons[0].affixes[0];
+  assert.equal(affix.abilityId, "DC_ABILITY_1");
+  assert.equal(affix.abilityNameKey, "DC_ABILITY_1_NAME");
+  assert.equal(affix.abilityDescKey, "DC_ABILITY_1_DESC");
+  assert.equal(affix.abilityName, "Calculated Risk");
+  assert.equal(affix.abilityDescription, "At the start of battle, eligible allies gain a bonus.");
+  assert.equal(affix.abilityTextResolved, true);
+
+  const summary = summarizeDatacrons(datacrons);
+  assert.equal(summary.abilityAffixes, 1);
+  assert.equal(summary.resolvedAbilityAffixes, 1);
+  assert.deepEqual(textContextStatus(), { abilities: 1, strings: localizationStatus.strings });
+});
+
+test("missing ability definition remains raw and unresolved rather than receiving guessed prose", () => {
+  const affix = enrichAffixAbilityText({ abilityId: "UNKNOWN_DC_ABILITY", tier: 9 }, new Map(), new Map());
+  assert.equal(affix.abilityId, "UNKNOWN_DC_ABILITY");
+  assert.equal(affix.abilityTextResolved, false);
+  assert.equal(Object.hasOwn(affix, "abilityName"), false);
+  assert.equal(Object.hasOwn(affix, "abilityDescription"), false);
 });
 
 test("summarizes owned datacron progression from unlocked affix count", () => {
@@ -81,6 +134,7 @@ test("summarizes owned datacron progression from unlocked affix count", () => {
   assert.equal(summary.locked, 1);
   assert.equal(summary.rerolled, 1);
   assert.equal(summary.abilityAffixes, 3);
+  assert.equal(summary.resolvedAbilityAffixes >= 0, true);
 });
 
 test("returns null when the upstream player payload does not expose a datacron collection", () => {
