@@ -5,6 +5,7 @@ const { createProductionFetch, sameService } = require("./production");
 const { createGuildAwareServer } = require("./guild-service");
 const { createGuildSyncPageService } = require("./guild-sync-page-service");
 const { createModAwareServer } = require("./mod-service");
+const { createGacAwareServer } = require("./gac-service");
 const { createVerificationAwareServer } = require("./verification-service");
 const { fetchStatsBatched } = require("./stats-batching");
 
@@ -105,7 +106,8 @@ function start() {
   const guildGateway = createGuildAwareServer(baseGateway, config, { fetch: fetchImpl });
   const syncPageGateway = createGuildSyncPageService(guildGateway, config, { fetch: fetchImpl });
   const modGateway = createModAwareServer(syncPageGateway, config, { fetch: fetchImpl });
-  createVerificationAwareServer(modGateway, config, { fetch: fetchImpl }).listen(config.port, "0.0.0.0", () => {
+  const gacGateway = createGacAwareServer(modGateway, config, { fetch: fetchImpl });
+  createVerificationAwareServer(gacGateway, config, { fetch: fetchImpl }).listen(config.port, "0.0.0.0", () => {
     console.log(`SWGOH live gateway recovery runtime listening on port ${config.port}`);
   });
 }
