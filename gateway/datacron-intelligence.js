@@ -1,11 +1,18 @@
 "use strict";
 
+let abilityDefinitions = new Map();
+let localizationStrings = new Map();
+
 function clean(value) {
   return String(value ?? "").trim();
 }
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function finiteOrNull(value) {
@@ -32,6 +39,136 @@ function normalizedTags(value) {
     .filter(Boolean))]);
 }
 
+function childArray(value) {
+  if (Array.isArray(value)) return value;
+  if (isRecord(value)) {
+    if (Array.isArray(value.data)) return value.data;
+    if (Array.isArray(value.items)) return value.items;
+    if (Array.isArray(value.values)) return value.values;
+  }
+  return [];
+}
+
+function findCollection(payload, names, depth = 0) {
+  if (depth > 5 || payload == null) return [];
+  if (!isRecord(payload)) return [];
+
+  for (const name of names) {
+    const found = childArray(payload[name]);
+    if (found.length) return found;
+  }
+  for (const key of ["data", "payload", "gameData", "result", "response"]) {
+    if (payload[key] !== undefined) {
+      const found = findCollection(payload[key], names, depth + 1);
+      if (found.length) return found;
+    }
+  }
+  for (const value of Object.values(payload)) {
+    if (!isRecord(value)) continue;
+    const found = findCollection(value, names, depth + 1);
+    if (found.length) return found;
+  }
+  return [];
+}
+
+function makeAbilityMap(values) {
+  const map = new Map();
+  for (const ability of asArray(values)) {
+    if (!isRecord(ability)) continue;
+    const id = clean(ability.id || ability.abilityId || ability.baseId);
+    if (id && !map.has(id)) map.set(id, ability);
+  }
+  return map;
+}
+
+function directStringMap(value) {
+  if (!isRecord(value)) return null;
+  const entries = Object.entries(value).filter(([, child]) => typeof child === "string");
+  return entries.length ? new Map(entries) : null;
+}
+
+function parseLocalization(payload) {
+  const candidates = [];
+  if (isRecord(payload)) {
+    for (const [key, value] of Object.entries(payload)) {
+      if (/eng[_-]?us/i.test(key)) candidates.unshift(value);
+      else candidates.push(value);
+    }
+    for (const key of ["data", "payload", "result"]) {
+      if (payload[key] !== undefined) candidates.unshift(payload[key]);
+    }
+  }
+
+  for (const candidate of candidates) {
+    const direct = directStringMap(candidate);
+    if (direct?.size) return direct;
+    if (typeof candidate === "string") {
+      const entries = [];
+      for (const line of candidate.split(/\r?\n/)) {
+        const separator = line.indexOf("|");
+        if (separator <= 0) continue;
+        entries.push([line.slice(0, separator), line.slice(separator + 1).replace(/\\n/g, "\n")]);
+      }
+      if (entries.length) return new Map(entries);
+    }
+    if (isRecord(candidate)) {
+      for (const [key, value] of Object.entries(candidate)) {
+        if (!/eng[_-]?us/i.test(key)) continue;
+        const nested = directStringMap(value);
+        if (nested?.size) return nested;
+      }
+    }
+  }
+  return new Map();
+}
+
+function observeGameData(payload) {
+  const abilities = findCollection(payload, ["ability", "abilities", "abilityData", "abilityList"]);
+  if (!abilities.length) return Object.freeze({ observed: false, abilities: abilityDefinitions.size });
+  abilityDefinitions = makeAbilityMap(abilities);
+  return Object.freeze({ observed: true, abilities: abilityDefinitions.size });
+}
+
+function observeLocalization(payload) {
+  const parsed = parseLocalization(payload);
+  if (!parsed.size) return Object.freeze({ observed: false, strings: localizationStrings.size });
+  localizationStrings = parsed;
+  return Object.freeze({ observed: true, strings: localizationStrings.size });
+}
+
+function localizedText(strings, key, fallback = "") {
+  const lookup = clean(key);
+  if (lookup && strings instanceof Map) {
+    const value = clean(strings.get(lookup));
+    if (value) return value;
+  }
+  return clean(fallback);
+}
+
+function enrichAffixAbilityText(affix = {}, abilityMap = abilityDefinitions, strings = localizationStrings) {
+  const abilityId = clean(affix?.abilityId);
+  if (!abilityId) return Object.freeze({ ...affix, abilityTextResolved: false });
+  const ability = abilityMap instanceof Map ? abilityMap.get(abilityId) : null;
+  if (!ability || typeof ability !== "object") {
+    return Object.freeze({ ...affix, abilityTextResolved: false });
+  }
+
+  const abilityNameKey = clean(ability.nameKey || ability.name_key);
+  const abilityDescKey = clean(ability.descKey || ability.descriptionKey || ability.desc_key);
+  const abilityName = localizedText(strings, abilityNameKey, ability.name);
+  const abilityDescription = localizedText(strings, abilityDescKey, ability.description || ability.desc);
+  const abilityTextResolved = Boolean(abilityName || abilityDescription);
+
+  return Object.freeze({
+    ...affix,
+    abilityNameKey,
+    abilityDescKey,
+    ...(abilityName ? { abilityName } : {}),
+    ...(abilityDescription ? { abilityDescription } : {}),
+    abilityTextResolved,
+  });
+}
+
 function normalizeAffix(raw = {}, index = 0) {
   if (!raw || typeof raw !== "object") return null;
   const tier = index + 1;
@@ -44,7 +181,7 @@ function normalizeAffix(raw = {}, index = 0) {
   const tags = normalizedTags(raw.tag || raw.tags);
   const kind = abilityId && statType !== null ? "mixed" : abilityId ? "ability" : statType !== null ? "stat" : "unknown";
 
-  return Object.freeze({
+  return enrichAffixAbilityText(Object.freeze({
     tier,
     kind,
     tags,
@@ -54,7 +191,7 @@ function normalizeAffix(raw = {}, index = 0) {
     statValue,
     requiredUnitTier,
     requiredRelicTier,
-  });
+  }));
 }
 
 function normalizeDatacron(raw = {}) {
@@ -92,40 +229,7 @@ function normalizeDatacrons(value) {
   return Object.freeze(value.map(normalizeDatacron).filter(Boolean));
 }
 
-function localizedText(strings, key, fallback = "") {
-  const lookup = clean(key);
-  if (lookup && strings instanceof Map) {
-    const value = clean(strings.get(lookup));
-    if (value) return value;
-  }
-  return clean(fallback);
-}
-
-function enrichAffixAbilityText(affix = {}, abilityMap = new Map(), strings = new Map()) {
-  const abilityId = clean(affix?.abilityId);
-  if (!abilityId) return Object.freeze({ ...affix, abilityTextResolved: false });
-  const ability = abilityMap instanceof Map ? abilityMap.get(abilityId) : null;
-  if (!ability || typeof ability !== "object") {
-    return Object.freeze({ ...affix, abilityTextResolved: false });
-  }
-
-  const abilityNameKey = clean(ability.nameKey || ability.name_key);
-  const abilityDescKey = clean(ability.descKey || ability.descriptionKey || ability.desc_key);
-  const abilityName = localizedText(strings, abilityNameKey, ability.name);
-  const abilityDescription = localizedText(strings, abilityDescKey, ability.description || ability.desc);
-  const abilityTextResolved = Boolean(abilityName || abilityDescription);
-
-  return Object.freeze({
-    ...affix,
-    abilityNameKey,
-    abilityDescKey,
-    ...(abilityName ? { abilityName } : {}),
-    ...(abilityDescription ? { abilityDescription } : {}),
-    abilityTextResolved,
-  });
-}
-
-function enrichDatacrons(datacrons, abilityMap = new Map(), strings = new Map()) {
+function enrichDatacrons(datacrons, abilityMap = abilityDefinitions, strings = localizationStrings) {
   if (!Array.isArray(datacrons)) return datacrons;
   return Object.freeze(datacrons.map((datacron) => Object.freeze({
     ...datacron,
@@ -150,11 +254,19 @@ function summarizeDatacrons(value) {
   });
 }
 
+function textContextStatus() {
+  return Object.freeze({ abilities: abilityDefinitions.size, strings: localizationStrings.size });
+}
+
 module.exports = {
   enrichAffixAbilityText,
   enrichDatacrons,
   normalizeAffix,
   normalizeDatacron,
   normalizeDatacrons,
+  observeGameData,
+  observeLocalization,
+  parseLocalization,
   summarizeDatacrons,
+  textContextStatus,
 };
